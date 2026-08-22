@@ -1,12 +1,10 @@
-// One-time setup script: creates the "Заявки" and "Статусы для бота" tabs
-// with correct headers and status dropdowns. Safe to re-run (skips tabs
-// that already exist by the expected name).
+// One-time setup script: creates "Заявки" (fixed order data) and "Трекинг"
+// (dynamic status tracking) tabs. Safe to re-run.
 require('dotenv').config({ path: require('node:path').join(__dirname, '..', '.env') });
 const { google } = require('googleapis');
 const path = require('node:path');
 
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
-const STATUS_CODES = ['AT_WAREHOUSE_CN', 'IN_TRANSIT', 'AT_BORDER', 'CUSTOMS', 'DELIVERED'];
 
 async function main() {
   const auth = new google.auth.GoogleAuth({
@@ -22,8 +20,7 @@ async function main() {
 
   const requests = [];
 
-  // Reuse the first existing tab (e.g. "Лист2") as "Заявки" instead of leaving
-  // an empty unused tab around.
+  // Rename first sheet to "Заявки"
   if (!existingTitles.includes('Заявки')) {
     requests.push({
       updateSheetProperties: {
@@ -32,8 +29,10 @@ async function main() {
       },
     });
   }
-  if (!existingTitles.includes('Статусы для бота')) {
-    requests.push({ addSheet: { properties: { title: 'Статусы для бота' } } });
+
+  // Create "Трекинг" tab if it doesn't exist
+  if (!existingTitles.includes('Трекинг')) {
+    requests.push({ addSheet: { properties: { title: 'Трекинг' } } });
   }
 
   if (requests.length > 0) {
@@ -41,62 +40,36 @@ async function main() {
     console.log('Created/renamed tabs.');
   }
 
-  // Re-fetch to get real sheetIds for both tabs now that they exist.
+  // Re-fetch to get real sheetIds
   const meta2 = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
   const ordersSheet = meta2.data.sheets.find((s) => s.properties.title === 'Заявки');
-  const statusesSheet = meta2.data.sheets.find((s) => s.properties.title === 'Статусы для бота');
+  const trackingSheet = meta2.data.sheets.find((s) => s.properties.title === 'Трекинг');
 
-  // Headers
+  // Headers for "Заявки" (fixed data only)
   await sheets.spreadsheets.values.update({
     spreadsheetId: SPREADSHEET_ID,
-    range: 'Заявки!A1:F1',
+    range: 'Заявки!A1:E1',
     valueInputOption: 'RAW',
     requestBody: {
-      values: [['Номер заявки', 'Клиент', 'Описание груза', 'Маршрут', 'ETA', 'Текущий статус (при создании)']],
+      values: [['Cargo ID', 'Client', 'Cargo', 'Route', 'ETA']],
     },
   });
+
+  // Headers for "Трекинг" (starts with just Cargo ID, grows as statuses are added)
   await sheets.spreadsheets.values.update({
     spreadsheetId: SPREADSHEET_ID,
-    range: "'Статусы для бота'!A1:D1",
+    range: 'Трекинг!A1:A1',
     valueInputOption: 'RAW',
-    requestBody: { values: [['Номер заявки', 'Новый статус', 'Комментарий', 'Processed']] },
+    requestBody: {
+      values: [['Cargo ID']],
+    },
   });
 
-  // Dropdown data validation for status columns (rows 2-500 — plenty of headroom).
-  const validationRule = {
-    condition: { type: 'ONE_OF_LIST', values: STATUS_CODES.map((v) => ({ userEnteredValue: v })) },
-    showCustomUi: true,
-    strict: true,
-  };
+  // Bold header rows
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId: SPREADSHEET_ID,
     requestBody: {
       requests: [
-        {
-          setDataValidation: {
-            range: {
-              sheetId: ordersSheet.properties.sheetId,
-              startRowIndex: 1,
-              endRowIndex: 500,
-              startColumnIndex: 5, // F
-              endColumnIndex: 6,
-            },
-            rule: validationRule,
-          },
-        },
-        {
-          setDataValidation: {
-            range: {
-              sheetId: statusesSheet.properties.sheetId,
-              startRowIndex: 1,
-              endRowIndex: 500,
-              startColumnIndex: 1, // B
-              endColumnIndex: 2,
-            },
-            rule: validationRule,
-          },
-        },
-        // Bold header rows on both tabs
         {
           repeatCell: {
             range: { sheetId: ordersSheet.properties.sheetId, startRowIndex: 0, endRowIndex: 1 },
@@ -106,7 +79,7 @@ async function main() {
         },
         {
           repeatCell: {
-            range: { sheetId: statusesSheet.properties.sheetId, startRowIndex: 0, endRowIndex: 1 },
+            range: { sheetId: trackingSheet.properties.sheetId, startRowIndex: 0, endRowIndex: 1 },
             cell: { userEnteredFormat: { textFormat: { bold: true } } },
             fields: 'userEnteredFormat.textFormat.bold',
           },
@@ -115,7 +88,7 @@ async function main() {
     },
   });
 
-  console.log('Sheet setup complete: headers + status dropdowns on both tabs.');
+  console.log('Sheet setup complete: "Заявки" (fixed) and "Трекинг" (dynamic).');
 }
 
 main().catch((err) => {

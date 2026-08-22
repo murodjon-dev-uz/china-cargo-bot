@@ -75,15 +75,27 @@ server.registerTool(
   }
 );
 
+// Helper: find next empty (Status N, Date N) pair in tracking sheet
+function numberToColumn(num) {
+  let col = '';
+  while (num > 0) {
+    num--;
+    col = String.fromCharCode(65 + (num % 26)) + col;
+    num = Math.floor(num / 26);
+  }
+  return col;
+}
+
 server.registerTool(
   'set_cargo_status',
   {
-    title: 'Изменить статус груза',
+    title: 'Добавить статус груза',
     description:
-      'Меняет текущий статус заявки, принимая свободный текст сообщения для клиента (например «Груз на границе, ожидает таможенного оформления»). ' +
-      'Код статуса определяется автоматически из текста (словарь синонимов); код никогда не вводится напрямую. ' +
-      'ВСЕГДА сначала подтверди у менеджера точный номер заявки и текст сообщения словами, прежде чем вызывать этот инструмент — отменить рассылку клиенту потом нельзя. ' +
-      'Статус применяется в базе сразу, но клиент получит уведомление только в ежедневном дайджесте в 09:00, не мгновенно.',
+      'Добавляет новый статус в таблицу "Трекинг". Принимает свободный текст сообщения для клиента ' +
+      '(например «Груз на границе, ожидает таможенного оформления»). ' +
+      'Код статуса определяется автоматически из текста (словарь синонимов). ' +
+      'ВСЕГДА сначала подтверди у менеджера точный номер заявки и текст сообщения словами — отменить рассылку потом нельзя. ' +
+      'Статус применяется в базе сразу, клиент увидит в «Мои заявки» сразу, уведомление в дайджесте 09:00.',
     inputSchema: {
       order_number: z.string().describe('Номер заявки, например CL-001'),
       message: z.string().describe('Текст сообщения для клиента, описывающий текущий статус'),
@@ -92,47 +104,73 @@ server.registerTool(
   async ({ order_number, message }) => {
     const order = queries.findOrder(order_number);
     if (!order) {
-      return { content: [{ type: 'text', text: `Ошибка: заявка ${order_number} не найдена. Ничего не изменено.` }], isError: true };
+      return { content: [{ type: 'text', text: `Ошибка: заявка ${order_number} не найдена.` }], isError: true };
     }
+
     const statusCode = inferStatusCode(message);
-    if (!statusCode || !queries.isValidStatusCode(statusCode)) {
-      const valid = queries.listStatusCatalog().map((s) => s.code).join(', ');
+
+    try {
+      // Read tracking sheet to find next empty (Status N, Date N) pair
+      const trackingRows = await sheets.readTab(config.sheets.trackingTab);
+      const cargoRow = trackingRows.find((r) => r[config.sheets.orderNumberCol] === order_number);
+
+      if (!cargoRow) {
+        // First time: add cargo to tracking sheet
+        await sheets.appendRow(config.sheets.trackingTab, [order_number]);
+        trackingRows.push({ [config.sheets.orderNumberCol]: order_number });
+      }
+
+      // Find next empty pair (Status N, Date N)
+      let colIndex = 2;
+      let statusCol, dateCol, statusKey, dateKey;
+      while (colIndex < 100) {
+        statusCol = numberToColumn(colIndex);
+        dateCol = numberToColumn(colIndex + 1);
+        const pairNum = Math.floor((colIndex - 1) / 2) + 1;
+        statusKey = `${config.sheets.statusColPrefix} ${pairNum}`;
+        dateKey = `${config.sheets.dateColPrefix} ${pairNum}`;
+
+        if (!cargoRow || !cargoRow[statusKey]) {
+          break;
+        }
+        colIndex += 2;
+      }
+
+      // Add headers if first time
+      const headerRow = trackingRows[0] || {};
+      if (!headerRow[statusKey]) {
+        await sheets.writeCell(config.sheets.trackingTab, 1, statusCol, statusKey);
+        await sheets.writeCell(config.sheets.trackingTab, 1, dateCol, dateKey);
+      }
+
+      // Write status and date
+      const rowNum = trackingRows.findIndex((r) => r[config.sheets.orderNumberCol] === order_number) + 2;
+      const today = new Date().toISOString().split('T')[0];
+      await sheets.writeCell(config.sheets.trackingTab, rowNum, statusCol, message);
+      await sheets.writeCell(config.sheets.trackingTab, rowNum, dateCol, today);
+
+      // Update DB
+      queries.withTransaction(() => {
+        queries.updateOrderStatus({ orderNumber: order_number, statusCode: statusCode || null, comment: message });
+        if (statusCode) {
+          queries.appendStatusHistory({ orderNumber: order_number, statusCode, comment: message, source: 'openclaw_manager' });
+          queries.recordSyncLog(order_number, statusCode, message, 'applied');
+        }
+      });
+
+      const statusInfo = statusCode ? ` (статус: ${statusCode})` : '';
       return {
         content: [
           {
             type: 'text',
-            text: `Ошибка: не удалось распознать статус в сообщении «${message}». Допустимые коды: ${valid}. Ничего не изменено.`,
+            text: `✅ Статус добавлен для ${order_number}${statusInfo}.\nКлиент увидит в «Мои заявки» сразу, уведомление в дайджесте 09:00.`,
           },
         ],
-        isError: true,
       };
-    }
-
-    queries.withTransaction(() => {
-      queries.updateOrderStatus({ orderNumber: order_number, statusCode, comment: message });
-      queries.appendStatusHistory({ orderNumber: order_number, statusCode, comment: message, source: 'openclaw_manager' });
-      queries.recordSyncLog(order_number, statusCode, message, 'applied');
-    });
-
-    // Audit trail in the sheet (2 columns now: order number + client message),
-    // already marked in sync_log so the 02:30 sync never double-applies this.
-    try {
-      await sheets.appendRow(config.sheets.statusesTab, [order_number, message]);
     } catch (err) {
-      logger.warn('set_cargo_status: sheet audit append failed (DB was still updated)', err.message);
+      logger.error('set_cargo_status failed', order_number, err.message);
+      return { content: [{ type: 'text', text: `Ошибка: ${err.message}` }], isError: true };
     }
-
-    const status = queries.getStatus(statusCode);
-    return {
-      content: [
-        {
-          type: 'text',
-          text:
-            `Готово: ${order_number} → ${status.emoji || ''} ${status.label_ru}. ` +
-            `Клиент увидит «${message}» сразу в «Мои заявки», а push-уведомление придёт в дайджесте 09:00 (сейчас не отправляется).`,
-        },
-      ],
-    };
   }
 );
 
