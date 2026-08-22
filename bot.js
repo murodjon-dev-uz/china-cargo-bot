@@ -8,6 +8,7 @@ const { registerMyOrders } = require('./handlers/myOrders');
 const { registerContactManager } = require('./handlers/contactManager');
 const { registerManagerCommands } = require('./handlers/managerCommands');
 const { registerSchedules } = require('./scheduler');
+const { startWebhookServer } = require('./webhook');
 
 const bot = new Telegraf(config.botToken);
 
@@ -32,6 +33,7 @@ bot
   .launch({}, () => {
     logger.info('China Cargo bot: launched (long polling)');
     registerSchedules(bot.telegram);
+    startWebhookServer(3000);
   })
   .catch((err) => {
     logger.error('Bot stopped with an error', err);
