@@ -20,6 +20,7 @@ async function runMorningDigest(telegram) {
       const parts = [`• ${o.order_number}`];
       if (o.cargo_description) parts.push(`— ${o.cargo_description}`);
       parts.push(`, сейчас ${(o.label_ru || '').toLowerCase()}`);
+      if (o.current_comment) parts.push(`: ${o.current_comment}`);
       if (o.eta_date) parts.push(`, прогноз ${formatDateRu(o.eta_date)}`);
       lines.push(parts.join(''));
     }

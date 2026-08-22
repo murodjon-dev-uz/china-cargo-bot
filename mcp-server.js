@@ -23,6 +23,7 @@ const config = require('./config');
 const queries = require('./db/queries');
 const sheets = require('./sheets');
 const logger = require('./lib/logger');
+const { inferStatusCode } = require('./lib/statusInference');
 const { formatDateRu, formatDateTimeRu } = require('./lib/format');
 
 const server = new McpServer({ name: 'china-cargo-status', version: '1.0.0' });
@@ -79,60 +80,56 @@ server.registerTool(
   {
     title: 'Изменить статус груза',
     description:
-      'Меняет текущий статус заявки. ВСЕГДА сначала подтверди у менеджера точный номер заявки, код статуса (из list_cargo_statuses) ' +
-      'и текст комментария словами, прежде чем вызывать этот инструмент — отменить массовую рассылку клиенту потом нельзя. ' +
+      'Меняет текущий статус заявки, принимая свободный текст сообщения для клиента (например «Груз на границе, ожидает таможенного оформления»). ' +
+      'Код статуса определяется автоматически из текста (словарь синонимов); код никогда не вводится напрямую. ' +
+      'ВСЕГДА сначала подтверди у менеджера точный номер заявки и текст сообщения словами, прежде чем вызывать этот инструмент — отменить рассылку клиенту потом нельзя. ' +
       'Статус применяется в базе сразу, но клиент получит уведомление только в ежедневном дайджесте в 09:00, не мгновенно.',
     inputSchema: {
       order_number: z.string().describe('Номер заявки, например CL-001'),
-      status_code: z.string().describe('Код статуса строго из списка list_cargo_statuses, например AT_BORDER'),
-      comment: z.string().optional().describe('Комментарий для клиента, необязательно'),
+      message: z.string().describe('Текст сообщения для клиента, описывающий текущий статус'),
     },
   },
-  async ({ order_number, status_code, comment }) => {
+  async ({ order_number, message }) => {
     const order = queries.findOrder(order_number);
     if (!order) {
       return { content: [{ type: 'text', text: `Ошибка: заявка ${order_number} не найдена. Ничего не изменено.` }], isError: true };
     }
-    if (!queries.isValidStatusCode(status_code)) {
+    const statusCode = inferStatusCode(message);
+    if (!statusCode || !queries.isValidStatusCode(statusCode)) {
       const valid = queries.listStatusCatalog().map((s) => s.code).join(', ');
       return {
-        content: [{ type: 'text', text: `Ошибка: неизвестный код статуса "${status_code}". Допустимые: ${valid}. Ничего не изменено.` }],
+        content: [
+          {
+            type: 'text',
+            text: `Ошибка: не удалось распознать статус в сообщении «${message}». Допустимые коды: ${valid}. Ничего не изменено.`,
+          },
+        ],
         isError: true,
       };
     }
 
     queries.withTransaction(() => {
-      queries.updateOrderStatus({ orderNumber: order_number, statusCode: status_code, comment: comment || null });
-      queries.appendStatusHistory({
-        orderNumber: order_number,
-        statusCode: status_code,
-        comment: comment || null,
-        source: 'openclaw_manager',
-      });
-      queries.recordSyncLog(order_number, status_code, comment || '', 'applied');
+      queries.updateOrderStatus({ orderNumber: order_number, statusCode, comment: message });
+      queries.appendStatusHistory({ orderNumber: order_number, statusCode, comment: message, source: 'openclaw_manager' });
+      queries.recordSyncLog(order_number, statusCode, message, 'applied');
     });
 
-    // Audit trail in the sheet + pre-mark processed so the 02:30 sync never
-    // double-applies this (it checks sync_log before touching anything).
+    // Audit trail in the sheet (2 columns now: order number + client message),
+    // already marked in sync_log so the 02:30 sync never double-applies this.
     try {
-      await sheets.appendRow(config.sheets.statusesTab, [
-        order_number,
-        status_code,
-        comment || '',
-        `✅ via Defender ${formatDateTimeRu(new Date().toISOString())}`,
-      ]);
+      await sheets.appendRow(config.sheets.statusesTab, [order_number, message]);
     } catch (err) {
       logger.warn('set_cargo_status: sheet audit append failed (DB was still updated)', err.message);
     }
 
-    const status = queries.getStatus(status_code);
+    const status = queries.getStatus(statusCode);
     return {
       content: [
         {
           type: 'text',
           text:
             `Готово: ${order_number} → ${status.emoji || ''} ${status.label_ru}. ` +
-            `Клиент увидит это сразу в «Мои заявки», а push-уведомление придёт в дайджесте 09:00 (или сейчас — не отправляется).`,
+            `Клиент увидит «${message}» сразу в «Мои заявки», а push-уведомление придёт в дайджесте 09:00 (сейчас не отправляется).`,
         },
       ],
     };

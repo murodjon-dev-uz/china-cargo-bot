@@ -31,5 +31,11 @@ module.exports = {
   sheets: {
     ordersTab: 'Заявки',
     statusesTab: 'Статусы для бота',
+    orderNumberCol: 'Номер заявки',
+    clientCol: 'Клиент',
+    cargoCol: 'Описание груза',
+    routeCol: 'Маршрут',
+    etaCol: 'ETA',
+    statusMessageCol: 'Сообщение клиенту',
   },
 };

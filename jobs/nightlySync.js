@@ -2,13 +2,18 @@ const config = require('../config');
 const sheets = require('../sheets');
 const queries = require('../db/queries');
 const logger = require('../lib/logger');
-const { formatDateTimeRu } = require('../lib/format');
+const { inferStatusCode } = require('../lib/statusInference');
 
 /**
  * Runs one full sync pass: ingests order master data, then status updates.
  * `telegram` is a telegraf Telegram instance used to notify clients/managers
  * (passed in so this module has no hard dependency on the live bot process —
  * it can also be run standalone via `npm run sync` for testing).
+ *
+ * Statuses are written by the manager as free-form client-facing text
+ * («Сообщение клиенту» column). The canonical status code is derived from
+ * the text via the synonym dictionary; rows that can't be mapped confidently
+ * are reported to managers and skipped (client text is not sent blindly).
  */
 async function runNightlySync(telegram) {
   logger.info('nightlySync: start');
@@ -17,42 +22,22 @@ async function runNightlySync(telegram) {
   // --- Step 1: order master data (Заявки tab) ---
   const orderRows = await sheets.readTab(config.sheets.ordersTab);
   for (const row of orderRows) {
-    const orderNumber = row['Номер заявки'];
+    const orderNumber = row[config.sheets.orderNumberCol];
     if (!orderNumber) continue;
 
     const existing = queries.findOrder(orderNumber);
-    const cargoDescription = row['Описание груза'];
-    const route = row['Маршрут'];
-    const etaDate = row['ETA'];
-    const boundUsername = row['Клиент'];
+    const cargoDescription = row[config.sheets.cargoCol];
+    const route = row[config.sheets.routeCol];
+    const etaDate = row[config.sheets.etaCol];
+    const boundUsername = row[config.sheets.clientCol];
 
     if (!existing) {
-      const initialStatusCode = row['Текущий статус (при создании)'];
-      if (initialStatusCode && !queries.isValidStatusCode(initialStatusCode)) {
-        problems.push(`«Заявки», строка ${row._row}: неизвестный начальный статус "${initialStatusCode}" для ${orderNumber}`);
-      }
-      queries.withTransaction(() => {
-        queries.createOrder({
-          orderNumber,
-          cargoDescription,
-          route,
-          etaDate,
-          boundUsername,
-          initialStatusCode: queries.isValidStatusCode(initialStatusCode) ? initialStatusCode : null,
-        });
-        if (queries.isValidStatusCode(initialStatusCode)) {
-          queries.appendStatusHistory({
-            orderNumber,
-            statusCode: initialStatusCode,
-            comment: null,
-            source: 'initial',
-          });
-        }
-      });
+      // No initial status anymore: a new order starts without a status and
+      // gets its first one from the «Статусы для бота» tab.
+      queries.createOrder({ orderNumber, cargoDescription, route, etaDate, boundUsername });
       logger.info('nightlySync: created order', orderNumber);
     } else {
-      // Existing order — master data fields only, status column is intentionally ignored
-      // (all status changes after creation flow through the "Статусы для бота" tab).
+      // Existing order — master data fields only.
       queries.updateOrderMasterData({ orderNumber, cargoDescription, route, etaDate, boundUsername });
     }
   }
@@ -63,52 +48,45 @@ async function runNightlySync(telegram) {
   let skipped = 0;
 
   for (const row of statusRows) {
-    const orderNumber = row['Номер заявки'];
-    const statusCode = row['Новый статус'];
-    const comment = row['Комментарий'] || '';
-    if (!orderNumber || !statusCode) continue;
+    const orderNumber = row[config.sheets.orderNumberCol];
+    const message = row[config.sheets.statusMessageCol] || '';
+    if (!orderNumber || !message) continue;
 
+    const statusCode = inferStatusCode(message);
     const order = queries.findOrder(orderNumber);
     if (!order) {
       problems.push(`«Статусы для бота», строка ${row._row}: неизвестный номер заявки "${orderNumber}"`);
-      queries.recordSyncLog(orderNumber, statusCode, comment, 'skipped_unknown_order');
+      queries.recordSyncLog(orderNumber, statusCode || '', message, 'skipped_unknown_order');
       skipped++;
       continue;
     }
-    if (!queries.isValidStatusCode(statusCode)) {
-      problems.push(`«Статусы для бота», строка ${row._row}: неизвестный статус "${statusCode}" для заявки ${orderNumber}`);
-      queries.recordSyncLog(orderNumber, statusCode, comment, 'skipped_invalid_status');
+    if (!statusCode || !queries.isValidStatusCode(statusCode)) {
+      problems.push(
+        `«Статусы для бота», строка ${row._row}: не удалось распознать статус в сообщении «${message}» для заявки ${orderNumber}`
+      );
+      queries.recordSyncLog(orderNumber, statusCode || '', message, 'skipped_unrecognized_status');
       skipped++;
       continue;
     }
-    if (queries.syncLogExists(orderNumber, statusCode, comment)) {
-      continue; // already processed this exact status+comment before
+    if (queries.syncLogExists(orderNumber, statusCode, message)) {
+      continue; // already processed this exact status+message before
     }
 
     queries.withTransaction(() => {
-      queries.updateOrderStatus({ orderNumber, statusCode, comment });
-      queries.appendStatusHistory({ orderNumber, statusCode, comment, source: 'sheet_sync' });
-      queries.recordSyncLog(orderNumber, statusCode, comment, 'applied');
+      queries.updateOrderStatus({ orderNumber, statusCode, comment: message });
+      queries.appendStatusHistory({ orderNumber, statusCode, comment: message, source: 'sheet_sync' });
+      queries.recordSyncLog(orderNumber, statusCode, message, 'applied');
     });
     applied++;
 
-    const status = queries.getStatus(statusCode);
     if (order.telegram_id && telegram) {
       try {
-        await telegram.sendMessage(
-          order.telegram_id,
-          `У вашей заявки ${orderNumber} новый статус: ${status.label_ru} ${status.emoji || ''}.` +
-            (comment ? ` Комментарий: ${comment}` : '')
-        );
+        await telegram.sendMessage(order.telegram_id, `По заявке ${orderNumber}:\n${message}`);
       } catch (err) {
         logger.warn('nightlySync: notify failed', order.telegram_id, err.message);
       }
     } else if (!order.telegram_id) {
       logger.warn('nightlySync: status applied but order has no resolved client binding yet', orderNumber);
-    }
-
-    if (telegram) {
-      await sheets.writeCell(config.sheets.statusesTab, row._row, 'D', `✅ ${formatDateTimeRu(new Date().toISOString())}`);
     }
   }
 

@@ -72,9 +72,9 @@ function findOrder(orderNumber) {
 function listOrdersForClient(telegramId) {
   return db
     .prepare(
-      `SELECT o.*, sc.label_ru, sc.emoji, sc.is_final
+      `SELECT o.*, sc.label_ru, sc.emoji, COALESCE(sc.is_final, 0) AS is_final
        FROM orders o
-       JOIN status_catalog sc ON sc.code = o.current_status_code
+       LEFT JOIN status_catalog sc ON sc.code = o.current_status_code
        WHERE o.telegram_id = ?
        ORDER BY o.updated_at DESC`
     )
