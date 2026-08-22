@@ -8,11 +8,16 @@ function required(name) {
 }
 
 function requiredIdList(name) {
-  return required(name)
+  const ids = required(name)
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean)
-    .map((s) => Number(s));
+    .map((s) => {
+      const num = Number(s);
+      if (isNaN(num)) throw new Error(`Invalid ID in ${name}: "${s}" is not a number`);
+      return num;
+    });
+  return ids;
 }
 
 module.exports = {

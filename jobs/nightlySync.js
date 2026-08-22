@@ -92,19 +92,18 @@ async function runNightlySync(telegram) {
     });
     applied++;
 
-    const refreshedOrder = queries.findOrder(orderNumber);
     const status = queries.getStatus(statusCode);
-    if (refreshedOrder.telegram_id && telegram) {
+    if (order.telegram_id && telegram) {
       try {
         await telegram.sendMessage(
-          refreshedOrder.telegram_id,
+          order.telegram_id,
           `У вашей заявки ${orderNumber} новый статус: ${status.label_ru} ${status.emoji || ''}.` +
             (comment ? ` Комментарий: ${comment}` : '')
         );
       } catch (err) {
-        logger.warn('nightlySync: notify failed', refreshedOrder.telegram_id, err.message);
+        logger.warn('nightlySync: notify failed', order.telegram_id, err.message);
       }
-    } else if (!refreshedOrder.telegram_id) {
+    } else if (!order.telegram_id) {
       logger.warn('nightlySync: status applied but order has no resolved client binding yet', orderNumber);
     }
 

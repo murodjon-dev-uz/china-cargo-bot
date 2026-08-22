@@ -22,24 +22,29 @@ function getSheetsClient() {
  */
 async function readTab(tabName) {
   const sheets = await getSheetsClient();
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: config.spreadsheetId,
-    range: `${tabName}!A:Z`,
-  });
-  const rows = res.data.values || [];
-  if (rows.length === 0) return [];
-  const headers = rows[0].map((h) => String(h).trim());
-  const out = [];
-  for (let i = 1; i < rows.length; i++) {
-    const row = rows[i];
-    if (!row || row.every((c) => !String(c || '').trim())) continue;
-    const obj = { _row: i + 1 };
-    headers.forEach((h, idx) => {
-      obj[h] = row[idx] !== undefined ? String(row[idx]).trim() : '';
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: config.spreadsheetId,
+      range: `${tabName}!A:Z`,
     });
-    out.push(obj);
+    const rows = res.data.values || [];
+    if (rows.length === 0) return [];
+    const headers = rows[0].map((h) => String(h).trim());
+    const out = [];
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || row.every((c) => !String(c || '').trim())) continue;
+      const obj = { _row: i + 1 };
+      headers.forEach((h, idx) => {
+        obj[h] = row[idx] !== undefined ? String(row[idx]).trim() : '';
+      });
+      out.push(obj);
+    }
+    return out;
+  } catch (err) {
+    logger.error('sheets.readTab failed', tabName, err.message);
+    throw err;
   }
-  return out;
 }
 
 async function writeCell(tabName, rowNumber, column, value) {
