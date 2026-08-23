@@ -7,25 +7,18 @@ CREATE TABLE IF NOT EXISTS clients (
 );
 CREATE INDEX IF NOT EXISTS idx_clients_username ON clients(username COLLATE NOCASE);
 
-CREATE TABLE IF NOT EXISTS status_catalog (
-  code       TEXT PRIMARY KEY,
-  label_ru   TEXT NOT NULL,
-  emoji      TEXT,
-  is_final   INTEGER NOT NULL DEFAULT 0,
-  sort_order INTEGER NOT NULL DEFAULT 0
-);
-
 CREATE TABLE IF NOT EXISTS orders (
   order_number         TEXT PRIMARY KEY,
   cargo_description    TEXT,
   route                 TEXT,
   eta_date              TEXT,
-  current_status_code   TEXT REFERENCES status_catalog(code),
-  current_comment       TEXT,
-  telegram_id           INTEGER REFERENCES clients(telegram_id),
-  bound_username         TEXT,
-  created_at             TEXT NOT NULL,
-  updated_at             TEXT NOT NULL
+  current_status       TEXT,
+  current_comment      TEXT,
+  stage                TEXT NOT NULL DEFAULT 'AT_FACTORY',
+  telegram_id          INTEGER REFERENCES clients(telegram_id),
+  bound_username       TEXT,
+  created_at           TEXT NOT NULL,
+  updated_at           TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_orders_telegram_id ON orders(telegram_id);
 CREATE INDEX IF NOT EXISTS idx_orders_bound_username ON orders(bound_username COLLATE NOCASE);
@@ -33,7 +26,7 @@ CREATE INDEX IF NOT EXISTS idx_orders_bound_username ON orders(bound_username CO
 CREATE TABLE IF NOT EXISTS status_history (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   order_number  TEXT NOT NULL REFERENCES orders(order_number),
-  status_code   TEXT NOT NULL REFERENCES status_catalog(code),
+  status_text   TEXT NOT NULL,
   comment       TEXT,
   changed_at    TEXT NOT NULL,
   source        TEXT NOT NULL
@@ -52,7 +45,7 @@ CREATE TABLE IF NOT EXISTS manager_actions_log (
   id                    INTEGER PRIMARY KEY AUTOINCREMENT,
   manager_telegram_id   INTEGER NOT NULL,
   order_number          TEXT NOT NULL,
-  new_status_code       TEXT,
-  comment                TEXT,
-  created_at             TEXT NOT NULL
+  new_status_text       TEXT,
+  comment               TEXT,
+  created_at            TEXT NOT NULL
 );

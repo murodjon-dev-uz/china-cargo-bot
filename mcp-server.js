@@ -3,18 +3,19 @@
 // of opening the Google Sheet or the china-cargo-bot's own /status command.
 //
 // Design constraints (see conversation with the business owner):
-// - Reuses the SAME validated status_catalog and the SAME SQLite DB as the
-//   client-facing bot (no separate source of truth, no risk of an
-//   AI-invented status code ever reaching a client).
+// - Status text is free-form, written/dictated by the AI assistant itself —
+//   there is no fixed catalog of status codes. Whatever text is provided is
+//   stored and shown to the client exactly as written, no inference, no
+//   dropdown, nothing to keep in sync.
 // - Writing a new status updates the DB immediately (so "Мои заявки" always
 //   reflects the latest truth if a client checks), but deliberately does
 //   NOT send an immediate push notification — the owner wants notifications
 //   batched into the existing 09:00 digest, not one-off pings triggered by
 //   ad-hoc Defender chats through the day.
-// - Also appends an audit row to the "Статусы для бота" sheet tab and
-//   pre-marks it as already processed (via sync_log), so the manager still
-//   sees a full history in the spreadsheet and the 02:30 nightly sync never
-//   double-applies or double-notifies for a change Defender already made.
+// - Also appends an audit row to the "Трекинг" sheet tab and pre-marks it as
+//   already processed (via sync_log), so the manager still sees a full
+//   history in the spreadsheet and no other process double-applies or
+//   double-notifies for a change Defender already made.
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const { z } = require('zod');
@@ -23,7 +24,6 @@ const config = require('./config');
 const queries = require('./db/queries');
 const sheets = require('./sheets');
 const logger = require('./lib/logger');
-const { inferStatusCode } = require('./lib/statusInference');
 const { formatDateRu, formatDateTimeRu } = require('./lib/format');
 
 const server = new McpServer({ name: 'china-cargo-status', version: '1.0.0' });
@@ -41,36 +41,18 @@ server.registerTool(
     if (!order) {
       return { content: [{ type: 'text', text: `Заявка ${order_number} не найдена.` }] };
     }
-    const status = queries.getStatus(order.current_status_code);
     const history = queries.getOrderHistory(order_number);
     const lines = [
       `Заявка ${order.order_number}`,
       order.cargo_description ? `Груз: ${order.cargo_description}` : null,
       order.route ? `Маршрут: ${order.route}` : null,
-      `Статус: ${status ? `${status.emoji || ''} ${status.label_ru}`.trim() : 'не задан'}`,
-      order.current_comment ? `Комментарий: ${order.current_comment}` : null,
+      order.current_status ? `Статус: ${order.current_status}` : 'Статус: не задан',
       order.eta_date ? `ETA: ${formatDateRu(order.eta_date)}` : null,
       order.telegram_id ? `Клиент привязан (id ${order.telegram_id})` : 'Клиент ещё не привязан',
       '',
       'История:',
-      ...history.map(
-        (h) => `${formatDateTimeRu(h.changed_at)} — ${h.emoji || ''} ${h.label_ru}${h.comment ? ` (${h.comment})` : ''} [${h.source}]`
-      ),
+      ...history.map((h) => `${formatDateTimeRu(h.changed_at)} — ${h.status_text} [${h.source}]`),
     ].filter((l) => l !== null);
-    return { content: [{ type: 'text', text: lines.join('\n') }] };
-  }
-);
-
-server.registerTool(
-  'list_cargo_statuses',
-  {
-    title: 'Список допустимых статусов',
-    description: 'Возвращает список всех допустимых кодов статусов (используй перед set_cargo_status, чтобы выбрать точный код).',
-    inputSchema: {},
-  },
-  async () => {
-    const catalog = queries.listStatusCatalog();
-    const lines = catalog.map((s) => `${s.code} — ${s.emoji || ''} ${s.label_ru}${s.is_final ? ' (финальный)' : ''}`);
     return { content: [{ type: 'text', text: lines.join('\n') }] };
   }
 );
@@ -92,8 +74,8 @@ server.registerTool(
     title: 'Добавить статус груза',
     description:
       'Добавляет новый статус в таблицу "Трекинг". Принимает свободный текст сообщения для клиента ' +
-      '(например «Груз на границе, ожидает таможенного оформления»). ' +
-      'Код статуса определяется автоматически из текста (словарь синонимов). ' +
+      '(например «Груз на границе, ожидает таможенного оформления»). Текст сохраняется и показывается клиенту как есть — ' +
+      'никакой кодировки/каталога статусов нет. ' +
       'ВСЕГДА сначала подтверди у менеджера точный номер заявки и текст сообщения словами — отменить рассылку потом нельзя. ' +
       'Статус применяется в базе сразу, клиент увидит в «Мои заявки» сразу, уведомление в дайджесте 09:00.',
     inputSchema: {
@@ -106,8 +88,6 @@ server.registerTool(
     if (!order) {
       return { content: [{ type: 'text', text: `Ошибка: заявка ${order_number} не найдена.` }], isError: true };
     }
-
-    const statusCode = inferStatusCode(message);
 
     try {
       // Read tracking sheet to find next empty (Status N, Date N) pair
@@ -150,20 +130,19 @@ server.registerTool(
       await sheets.writeCell(config.sheets.trackingTab, rowNum, dateCol, today);
 
       // Update DB
-      queries.withTransaction(() => {
-        queries.updateOrderStatus({ orderNumber: order_number, statusCode: statusCode || null, comment: message });
-        if (statusCode) {
-          queries.appendStatusHistory({ orderNumber: order_number, statusCode, comment: message, source: 'openclaw_manager' });
-          queries.recordSyncLog(order_number, statusCode, message, 'applied');
-        }
-      });
+      if (!queries.hasSyncedBefore(order_number, message, null)) {
+        queries.withTransaction(() => {
+          queries.updateOrderStatus({ orderNumber: order_number, statusText: message, comment: null });
+          queries.appendStatusHistory({ orderNumber: order_number, statusText: message, comment: null, source: 'openclaw_manager' });
+          queries.recordSyncLog(order_number, message, null, 'applied');
+        });
+      }
 
-      const statusInfo = statusCode ? ` (статус: ${statusCode})` : '';
       return {
         content: [
           {
             type: 'text',
-            text: `✅ Статус добавлен для ${order_number}${statusInfo}.\nКлиент увидит в «Мои заявки» сразу, уведомление в дайджесте 09:00.`,
+            text: `✅ Статус добавлен для ${order_number}.\nКлиент увидит в «Мои заявки» сразу, уведомление в дайджесте 09:00.`,
           },
         ],
       };

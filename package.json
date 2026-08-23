@@ -6,7 +6,6 @@
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
-    "sync": "node jobs/nightlySync.js",
     "digest": "node jobs/morningDigest.js"
   },
   "dependencies": {

@@ -13,7 +13,8 @@ function registerContactManager(bot) {
     try {
       await ctx.telegram.sendMessage(
         config.managerGroupChatId,
-        `Клиент ${who}${orderNote} просит связаться.`
+        `Клиент ${who}${orderNote} просит связаться.`,
+        config.managerGroupTopicId ? { message_thread_id: config.managerGroupTopicId } : {}
       );
     } catch (err) {
       logger.error('Failed to notify manager group', err.message);

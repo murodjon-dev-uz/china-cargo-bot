@@ -12,6 +12,7 @@ function registerStart(bot) {
       username: ctx.from.username,
       firstName: ctx.from.first_name,
     });
+    queries.resolveClientBindings();
     return ctx.reply(GREETING, mainMenu());
   });
 

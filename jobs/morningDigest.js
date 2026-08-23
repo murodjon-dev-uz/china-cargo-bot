@@ -5,7 +5,7 @@ const { formatDateRu } = require('../lib/format');
 
 async function runMorningDigest(telegram) {
   logger.info('morningDigest: start');
-  const rows = queries.listActiveOrdersGroupedByClient();
+  const rows = queries.listActiveOrdersWithClients();
 
   const byClient = new Map();
   for (const row of rows) {
@@ -15,12 +15,11 @@ async function runMorningDigest(telegram) {
 
   let sent = 0;
   for (const [telegramId, orders] of byClient) {
-    const lines = ['🌅 Доброе утро! Ваши активные грузы на сегодня:'];
+    const lines = ['🌅 Доброе утро! Ваши грузы на сегодня:'];
     for (const o of orders) {
       const parts = [`• ${o.order_number}`];
       if (o.cargo_description) parts.push(`— ${o.cargo_description}`);
-      parts.push(`, сейчас ${(o.label_ru || '').toLowerCase()}`);
-      if (o.current_comment) parts.push(`: ${o.current_comment}`);
+      if (o.current_status) parts.push(`, сейчас: ${o.current_status}`);
       if (o.eta_date) parts.push(`, прогноз ${formatDateRu(o.eta_date)}`);
       lines.push(parts.join(''));
     }

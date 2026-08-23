@@ -12,21 +12,12 @@ db.exec('PRAGMA foreign_keys = ON;');
 const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
 db.exec(schema);
 
-// Seed a starter status catalog only if empty — real business codes should be
-// reviewed and edited by the user before go-live (see plan §4/§10).
-const catalogCount = db.prepare('SELECT COUNT(*) AS n FROM status_catalog').get().n;
-if (catalogCount === 0) {
-  const insert = db.prepare(
-    'INSERT INTO status_catalog (code, label_ru, emoji, is_final, sort_order) VALUES (?, ?, ?, ?, ?)'
-  );
-  const seed = [
-    ['AT_WAREHOUSE_CN', 'На складе в Китае', '🏭', 0, 1],
-    ['IN_TRANSIT', 'В пути', '🚚', 0, 2],
-    ['AT_BORDER', 'На границе', '🛂', 0, 3],
-    ['CUSTOMS', 'На таможне', '📋', 0, 4],
-    ['DELIVERED', 'Доставлен', '✅', 1, 5],
-  ];
-  for (const row of seed) insert.run(...row);
+// Migration: `stage` was added after orders already existed in the wild —
+// CREATE TABLE IF NOT EXISTS above is a no-op on an existing table, so add
+// the column by hand when upgrading a pre-existing database.
+const orderColumns = db.prepare("PRAGMA table_info(orders)").all().map((c) => c.name);
+if (!orderColumns.includes('stage')) {
+  db.exec("ALTER TABLE orders ADD COLUMN stage TEXT NOT NULL DEFAULT 'AT_FACTORY'");
 }
 
 module.exports = db;
