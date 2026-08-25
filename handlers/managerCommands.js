@@ -2,10 +2,14 @@ const queries = require('../db/queries');
 const logger = require('../lib/logger');
 const { isManager } = require('../lib/roles');
 const { escapeHtml, truncate, pluralOrders } = require('../lib/format');
+const { sortByRelevance, renderOrderCard } = require('../lib/orderCard');
 const {
   ALL_ORDERS_BUTTON,
   MY_ORDERS_BUTTON,
   CONTACT_MANAGER_BUTTON,
+  managerClientsList,
+  managerClientOrders,
+  managerBackToClient,
 } = require('../keyboards');
 
 // In-memory, process-local — fine to lose on restart, it's just "awaiting a status text" state
@@ -13,88 +17,123 @@ const {
 const pendingStatus = new Map(); // managerTelegramId -> orderNumber
 
 // Telegram caps one message at 4096 characters; stay well under so a client
-// block is never cut mid-line.
+// block is never cut mid-line in the /all_orders text export.
 const MAX_MESSAGE_LEN = 3500;
 
 /**
- * Groups every order by client and renders each as an active/delivered
- * block. Clients who haven't opened the bot yet are still listed (under
- * their spreadsheet username) so nothing silently disappears from the
- * overview — the manager needs to see those precisely because they're the
- * ones who can't get notifications yet.
+ * Every order grouped by client, ordered most-relevant-first within each
+ * group. Clients who haven't opened the bot yet are grouped by their
+ * spreadsheet username and flagged — the manager needs to see exactly those,
+ * because they're the ones who can't receive notifications.
+ *
+ * Each group carries `keyOrderNumber` (any one of its orders) as its
+ * callback-data key: order numbers are short and re-derive the group exactly,
+ * unlike usernames (too long) or row indexes (go stale between renders).
  */
 function buildClientGroups() {
-  const orders = queries.listAllOrdersForOverview();
-  const groups = new Map();
+  const byClient = new Map();
 
-  for (const o of orders) {
+  for (const o of queries.listAllOrdersForOverview()) {
     const key = o.telegram_id != null ? `id:${o.telegram_id}` : `un:${o.bound_username || '—'}`;
-    if (!groups.has(key)) {
-      groups.set(key, {
-        username: o.bound_username || null,
-        telegramId: o.telegram_id,
-        active: [],
-        delivered: [],
-      });
+    if (!byClient.has(key)) {
+      byClient.set(key, { username: o.bound_username || null, telegramId: o.telegram_id, orders: [] });
     }
-    const group = groups.get(key);
-    (o.stage === 'DELIVERED' ? group.delivered : group.active).push(o);
+    byClient.get(key).orders.push(o);
   }
 
-  for (const group of groups.values()) {
-    group.active.sort((a, b) => String(a.eta_date || '9999').localeCompare(String(b.eta_date || '9999')));
-    group.delivered.sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
-  }
-  return groups;
+  return [...byClient.values()].map((g) => {
+    const { active, delivered, ordered } = sortByRelevance(g.orders);
+    return { ...g, active, delivered, ordered, keyOrderNumber: ordered[0].order_number };
+  });
 }
 
-function orderLine(order) {
-  const status = order.current_status ? ` · ${escapeHtml(truncate(order.current_status, 42))}` : '';
-  return `   <code>${escapeHtml(order.order_number)}</code>${status}`;
+/** Re-derives a client's group from any single order number they own. */
+function findGroupByOrder(orderNumber) {
+  const order = queries.findOrder(orderNumber);
+  if (!order) return null;
+  return buildClientGroups().find((g) =>
+    order.telegram_id != null
+      ? g.telegramId === order.telegram_id
+      : g.telegramId == null && g.username === order.bound_username
+  ) || null;
 }
 
-function renderClientBlock(group) {
+function clientIdentityLines(group) {
   const name = group.username ? `@${escapeHtml(group.username)}` : 'Без имени';
-  const identity = group.telegramId != null
-    ? `<b>👤 ${name}</b>\n   ID <code>${group.telegramId}</code>`
-    : `<b>👤 ${name}</b>\n   <i>ещё не открыл бота — уведомления не приходят</i>`;
-
-  const lines = [identity, ''];
-
-  lines.push(`🚚 <b>В пути</b> — ${group.active.length}`);
-  lines.push(...(group.active.length > 0 ? group.active.map(orderLine) : ['   —']));
-
-  lines.push('', `✅ <b>Доставлено</b> — ${group.delivered.length}`);
-  lines.push(...(group.delivered.length > 0 ? group.delivered.map(orderLine) : ['   —']));
-
-  return lines.join('\n');
+  return group.telegramId != null
+    ? [`<b>👤 ${name}</b>`, `ID <code>${group.telegramId}</code>`]
+    : [`<b>👤 ${name}</b>`, '<i>ещё не открыл бота — уведомления не приходят</i>'];
 }
 
-/** Returns an array of ready-to-send messages, packed to fit Telegram's limit. */
-function renderAllOrdersOverview() {
+// --- level 1: clients ---
+
+function clientsOverview() {
   const groups = buildClientGroups();
-  if (groups.size === 0) {
-    return ['📋 <b>Заявок пока нет</b>\n\nЗаявки появятся здесь, как только их добавят в Google-таблицу.'];
+  if (groups.length === 0) {
+    return {
+      text: '📋 <b>Заявок пока нет</b>\n\nЗаявки появятся здесь, как только их добавят в Google-таблицу.',
+      extra: {},
+    };
   }
 
-  let totalActive = 0;
-  let totalDelivered = 0;
-  for (const g of groups.values()) {
-    totalActive += g.active.length;
-    totalDelivered += g.delivered.length;
-  }
+  const totalActive = groups.reduce((n, g) => n + g.active.length, 0);
+  const totalDelivered = groups.reduce((n, g) => n + g.delivered.length, 0);
   const total = totalActive + totalDelivered;
 
-  const header = [
+  const text = [
     `📋 <b>Все заявки</b> — ${total} ${pluralOrders(total)}`,
-    `🚚 В пути — ${totalActive}   ✅ Доставлено — ${totalDelivered}`,
-    `👥 Клиентов — ${groups.size}`,
+    '',
+    `🚚 В пути — ${totalActive}`,
+    `✅ Доставлено — ${totalDelivered}`,
+    `👥 Клиентов — ${groups.length}`,
+    '',
+    'Выберите клиента, чтобы посмотреть его заявки.',
   ].join('\n');
 
-  const blocks = [...groups.values()].map(renderClientBlock);
+  return { text, extra: managerClientsList(groups) };
+}
 
+// --- level 2: one client's orders ---
+
+function clientOrdersView(orderNumber) {
+  const group = findGroupByOrder(orderNumber);
+  if (!group) return null;
+
+  const lines = [...clientIdentityLines(group), ''];
+  if (group.active.length > 0) {
+    lines.push(`🚚 В пути — ${group.active.length} ${pluralOrders(group.active.length)}`);
+  }
+  if (group.delivered.length > 0) {
+    lines.push(`✅ Доставлено — ${group.delivered.length} ${pluralOrders(group.delivered.length)}`);
+  }
+  lines.push('', 'Нажмите на заявку, чтобы посмотреть путь груза.');
+
+  return { text: lines.join('\n'), extra: managerClientOrders(group.ordered) };
+}
+
+// --- text export (the full overview in one scrollable dump) ---
+
+function renderTextExport() {
+  const groups = buildClientGroups();
+  if (groups.length === 0) return ['📋 <b>Заявок пока нет</b>'];
+
+  const orderLine = (o) => {
+    const status = o.current_status ? ` · ${escapeHtml(truncate(o.current_status, 42))}` : '';
+    return `   <code>${escapeHtml(o.order_number)}</code>${status}`;
+  };
+
+  const blocks = groups.map((g) => {
+    const lines = [...clientIdentityLines(g), ''];
+    lines.push(`🚚 <b>В пути</b> — ${g.active.length}`);
+    lines.push(...(g.active.length > 0 ? g.active.map(orderLine) : ['   —']));
+    lines.push('', `✅ <b>Доставлено</b> — ${g.delivered.length}`);
+    lines.push(...(g.delivered.length > 0 ? g.delivered.map(orderLine) : ['   —']));
+    return lines.join('\n');
+  });
+
+  const total = groups.reduce((n, g) => n + g.ordered.length, 0);
   const messages = [];
-  let current = header;
+  let current = `📋 <b>Все заявки</b> — ${total} ${pluralOrders(total)}`;
   for (const block of blocks) {
     const candidate = `${current}\n\n${block}`;
     if (candidate.length > MAX_MESSAGE_LEN) {
@@ -108,23 +147,49 @@ function renderAllOrdersOverview() {
   return messages;
 }
 
-async function sendAllOrders(ctx) {
-  // A visible "typing" beat while we build and send several messages, so the
-  // tap never feels like it did nothing.
-  await ctx.sendChatAction('typing').catch(() => {});
-  for (const message of renderAllOrdersOverview()) {
-    await ctx.reply(message, { parse_mode: 'HTML' });
-  }
-}
-
 function registerManagerCommands(bot) {
   bot.hears(ALL_ORDERS_BUTTON, (ctx) => {
     if (!isManager(ctx.from.id)) return; // silently ignore non-managers
-    return sendAllOrders(ctx);
+    const { text, extra } = clientsOverview();
+    return ctx.reply(text, { parse_mode: 'HTML', ...extra });
   });
-  bot.command('all_orders', (ctx) => {
+
+  bot.action('mgr:all', async (ctx) => {
+    if (!isManager(ctx.from.id)) return ctx.answerCbQuery();
+    await ctx.answerCbQuery();
+    const { text, extra } = clientsOverview();
+    return ctx.editMessageText(text, { parse_mode: 'HTML', ...extra });
+  });
+
+  bot.action(/^mgr:g:(.+)$/, async (ctx) => {
+    if (!isManager(ctx.from.id)) return ctx.answerCbQuery();
+    const view = clientOrdersView(ctx.match[1]);
+    if (!view) return ctx.answerCbQuery('Клиент не найден', { show_alert: true });
+    await ctx.answerCbQuery();
+    return ctx.editMessageText(view.text, { parse_mode: 'HTML', ...view.extra });
+  });
+
+  // Managers open any client's order in the same card the client sees, so
+  // what they check on the phone is exactly what the client is looking at.
+  bot.action(/^mgr:o:(.+)$/, async (ctx) => {
+    if (!isManager(ctx.from.id)) return ctx.answerCbQuery();
+    const orderNumber = ctx.match[1];
+    const order = queries.findOrder(orderNumber);
+    if (!order) return ctx.answerCbQuery('Заявка не найдена', { show_alert: true });
+    await ctx.answerCbQuery();
+    return ctx.editMessageText(renderOrderCard(order, queries.getOrderHistory(orderNumber)), {
+      parse_mode: 'HTML',
+      ...managerBackToClient(orderNumber),
+    });
+  });
+
+  // Full text export — everything at once, for scanning or copying out.
+  bot.command('all_orders', async (ctx) => {
     if (!isManager(ctx.from.id)) return;
-    return sendAllOrders(ctx);
+    await ctx.sendChatAction('typing').catch(() => {});
+    for (const message of renderTextExport()) {
+      await ctx.reply(message, { parse_mode: 'HTML' });
+    }
   });
 
   bot.command('status', (ctx) => {
@@ -177,17 +242,22 @@ async function applyManualStatus(ctx, orderNumber, statusText) {
   let notified = false;
   if (order.telegram_id) {
     try {
-      await ctx.telegram.sendMessage(order.telegram_id, `📦 <b>${escapeHtml(orderNumber)}</b> — новый статус\n\n${escapeHtml(statusText)}`, { parse_mode: 'HTML' });
+      await ctx.telegram.sendMessage(
+        order.telegram_id,
+        `📦 <b>${escapeHtml(orderNumber)}</b> — новый статус\n\n${escapeHtml(statusText)}`,
+        { parse_mode: 'HTML' }
+      );
       notified = true;
     } catch (err) {
       logger.error('Manual status: failed to notify client', order.telegram_id, err.message);
     }
   }
 
-  const confirmation = notified
-    ? `✅ Статус обновлён. Клиент получил уведомление.`
-    : `✅ Статус обновлён. Клиент ещё не открыл бота — уведомление не ушло.`;
-  return ctx.reply(confirmation);
+  return ctx.reply(
+    notified
+      ? '✅ Статус обновлён. Клиент получил уведомление.'
+      : '✅ Статус обновлён. Клиент ещё не открыл бота — уведомление не ушло.'
+  );
 }
 
 module.exports = { registerManagerCommands, isManager };

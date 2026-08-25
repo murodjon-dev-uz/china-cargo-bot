@@ -9,36 +9,64 @@ const MY_ORDERS_BUTTON = '📦 Мои заявки';
 const ALL_ORDERS_BUTTON = '📋 Все заявки';
 const CONTACT_MANAGER_BUTTON = '💬 Связь с менеджером';
 
-const BACK_BUTTON = '‹ К списку заявок';
+const BACK_TO_ORDERS = '‹ К списку заявок';
+const BACK_TO_CLIENTS = '‹ К списку клиентов';
 
 /**
  * The bot's only navigation surface, pinned open under the message box.
- * Managers get both views — every client's shipments ("Все заявки") and the
- * card view of orders booked under their own account ("Мои заявки") — on the
- * top row, with support underneath.
+ * Managers track every client's shipments, so their entry point is "Все
+ * заявки" — from there they drill down to any client and any order card.
  */
 function mainMenu(isManager = false) {
-  const rows = isManager
-    ? [[ALL_ORDERS_BUTTON, MY_ORDERS_BUTTON], [CONTACT_MANAGER_BUTTON]]
-    : [[MY_ORDERS_BUTTON, CONTACT_MANAGER_BUTTON]];
-  return Markup.keyboard(rows).resize().persistent();
+  const primary = isManager ? ALL_ORDERS_BUTTON : MY_ORDERS_BUTTON;
+  return Markup.keyboard([[primary, CONTACT_MANAGER_BUTTON]])
+    .resize()
+    .persistent();
 }
 
-/**
- * One button per order, labelled so it is identifiable without opening it:
- * stage emoji (where it is) + number (which one) + cargo (what it is).
- */
+/** Label an order so it's identifiable without opening it. */
+function orderButtonLabel(order) {
+  const emoji = getStageInfo(order.stage).emoji;
+  const cargo = order.cargo_description ? ` · ${truncate(order.cargo_description, 30)}` : '';
+  return `${emoji} ${order.order_number}${cargo}`;
+}
+
 function ordersList(orders) {
-  const rows = orders.map((o) => {
-    const emoji = getStageInfo(o.stage).emoji;
-    const cargo = o.cargo_description ? ` · ${truncate(o.cargo_description, 30)}` : '';
-    return [Markup.button.callback(`${emoji} ${o.order_number}${cargo}`, `order:${o.order_number}`)];
+  return Markup.inlineKeyboard(
+    orders.map((o) => [Markup.button.callback(orderButtonLabel(o), `order:${o.order_number}`)])
+  );
+}
+
+function backToOrdersList() {
+  return Markup.inlineKeyboard([[Markup.button.callback(BACK_TO_ORDERS, 'orders:list')]]);
+}
+
+// --- manager drill-down ---
+//
+// A group is keyed by ANY one of its order numbers: every order carries its
+// client, so re-deriving the group from one order number is exact, and the
+// key stays short enough for Telegram's 64-byte callback_data limit (a raw
+// username would not be, and row indexes would go stale between renders).
+
+function managerClientsList(groups) {
+  const rows = groups.map((g) => {
+    const name = g.username ? `@${g.username}` : 'Без имени';
+    const unbound = g.telegramId == null ? ' ⚠️' : '';
+    const label = `👤 ${truncate(name, 20)} · 🚚 ${g.active.length} · ✅ ${g.delivered.length}${unbound}`;
+    return [Markup.button.callback(label, `mgr:g:${g.keyOrderNumber}`)];
   });
   return Markup.inlineKeyboard(rows);
 }
 
-function backToOrdersList() {
-  return Markup.inlineKeyboard([[Markup.button.callback(BACK_BUTTON, 'orders:list')]]);
+function managerClientOrders(orders) {
+  const rows = orders.map((o) => [Markup.button.callback(orderButtonLabel(o), `mgr:o:${o.order_number}`)]);
+  rows.push([Markup.button.callback(BACK_TO_CLIENTS, 'mgr:all')]);
+  return Markup.inlineKeyboard(rows);
+}
+
+/** Back from an order card to the list of that same client's orders. */
+function managerBackToClient(orderNumber) {
+  return Markup.inlineKeyboard([[Markup.button.callback(BACK_TO_ORDERS, `mgr:g:${orderNumber}`)]]);
 }
 
 module.exports = {
@@ -48,4 +76,7 @@ module.exports = {
   mainMenu,
   ordersList,
   backToOrdersList,
+  managerClientsList,
+  managerClientOrders,
+  managerBackToClient,
 };
