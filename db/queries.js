@@ -253,6 +253,30 @@ function hasSyncedBefore(orderNumber, statusText, comment) {
   return !!row;
 }
 
+// --- daily digest bookkeeping ---
+
+/**
+ * Atomically claims a date for the digest. Returns true only for the caller
+ * that got there first — every later attempt that day (a restart, or the
+ * catch-up run racing the 09:00 cron) gets false and sends nothing.
+ */
+function claimDigestDate(digestDate) {
+  const result = db
+    .prepare('INSERT OR IGNORE INTO digest_log (digest_date, sent_at) VALUES (?, ?)')
+    .run(digestDate, nowIso());
+  return result.changes > 0;
+}
+
+function recordDigestResult(digestDate, clients, delivered) {
+  db.prepare('UPDATE digest_log SET clients = ?, delivered = ?, sent_at = ? WHERE digest_date = ?')
+    .run(clients, delivered, nowIso(), digestDate);
+}
+
+/** Releases a claimed date so a later run can retry (used when sending failed outright). */
+function releaseDigestDate(digestDate) {
+  db.prepare('DELETE FROM digest_log WHERE digest_date = ?').run(digestDate);
+}
+
 // --- manager actions ---
 
 function recordManagerAction({ managerTelegramId, orderNumber, statusText, comment }) {
@@ -287,5 +311,8 @@ module.exports = {
   replaceSheetStatusHistory,
   recordSyncLog,
   hasSyncedBefore,
+  claimDigestDate,
+  recordDigestResult,
+  releaseDigestDate,
   recordManagerAction,
 };

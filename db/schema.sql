@@ -41,6 +41,15 @@ CREATE TABLE IF NOT EXISTS sync_log (
   PRIMARY KEY (order_number, content_hash)
 );
 
+-- One row per day the digest went out, so restarts (or a catch-up run after
+-- the laptop was asleep at 09:00) can't send the same morning twice.
+CREATE TABLE IF NOT EXISTS digest_log (
+  digest_date  TEXT PRIMARY KEY,   -- YYYY-MM-DD in the configured timezone
+  sent_at      TEXT NOT NULL,
+  clients      INTEGER NOT NULL DEFAULT 0,
+  delivered    INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS manager_actions_log (
   id                    INTEGER PRIMARY KEY AUTOINCREMENT,
   manager_telegram_id   INTEGER NOT NULL,
