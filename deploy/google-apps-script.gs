@@ -16,9 +16,11 @@
 
 // ============ CONFIGURATION ============
 const WEBHOOK_BASE_URL = 'https://sleeve-dealt-strict.ngrok-free.dev';
-// Must match WEBHOOK_SECRET in the bot's .env — without it, the bot rejects
-// every request with 401 (see webhook.js's requireWebhookSecret).
-const WEBHOOK_SECRET = 'REDACTED';
+// Paste the value of WEBHOOK_SECRET from the bot's .env here, in the Apps
+// Script editor only — it is deliberately not stored in the repository.
+// Without a matching secret the bot rejects every request with 401
+// (see webhook.js's requireWebhookSecret).
+const WEBHOOK_SECRET = 'ВСТАВЬТЕ_СЮДА_WEBHOOK_SECRET_ИЗ_ENV';
 
 const TRACKING_SHEET_NAME = 'Трекинг';
 const ORDERS_SHEET_NAME = 'Заявки';
