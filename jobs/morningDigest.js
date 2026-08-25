@@ -1,7 +1,7 @@
 const config = require('../config');
 const queries = require('../db/queries');
 const logger = require('../lib/logger');
-const { formatDateRu } = require('../lib/format');
+const { formatDateRu, formatEtaCountdown, pluralOrders, escapeHtml } = require('../lib/format');
 
 async function runMorningDigest(telegram) {
   logger.info('morningDigest: start');
@@ -15,18 +15,29 @@ async function runMorningDigest(telegram) {
 
   let sent = 0;
   for (const [telegramId, orders] of byClient) {
-    const lines = ['🌅 Доброе утро! Ваши грузы на сегодня:'];
+    // Soonest arrival first — that's the shipment the client is waiting on.
+    orders.sort((a, b) => String(a.eta_date || '9999').localeCompare(String(b.eta_date || '9999')));
+
+    const lines = [
+      '🌅 <b>Доброе утро!</b>',
+      '',
+      `В пути ${orders.length} ${pluralOrders(orders.length)}:`,
+      '',
+    ];
     for (const o of orders) {
-      const parts = [`• ${o.order_number}`];
-      if (o.cargo_description) parts.push(`— ${o.cargo_description}`);
-      if (o.current_status) parts.push(`, сейчас: ${o.current_status}`);
-      if (o.eta_date) parts.push(`, прогноз ${formatDateRu(o.eta_date)}`);
-      lines.push(parts.join(''));
+      const cargo = o.cargo_description ? ` · ${escapeHtml(o.cargo_description)}` : '';
+      lines.push(`📦 <b>${escapeHtml(o.order_number)}</b>${cargo}`);
+      if (o.current_status) lines.push(`   ${escapeHtml(o.current_status)}`);
+      if (o.eta_date) {
+        const countdown = formatEtaCountdown(o.eta_date);
+        lines.push(`   Прибытие: ${formatDateRu(o.eta_date)}${countdown ? ` · <b>${countdown}</b>` : ''}`);
+      }
+      lines.push('');
     }
-    lines.push('Если есть вопросы, нажмите «Связь с менеджером».');
+    lines.push('Вопросы? Нажмите «💬 Связь с менеджером».');
 
     try {
-      await telegram.sendMessage(telegramId, lines.join('\n'));
+      await telegram.sendMessage(telegramId, lines.join('\n'), { parse_mode: 'HTML' });
       sent++;
     } catch (err) {
       logger.warn('morningDigest: send failed', telegramId, err.message);

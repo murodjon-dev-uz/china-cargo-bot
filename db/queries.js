@@ -170,6 +170,19 @@ function listActiveOrdersWithClients() {
     .all();
 }
 
+// Owner/manager overview — every order, across every client, grouped for
+// display. Orders whose client hasn't /start'd the bot yet (no telegram_id)
+// are grouped by their raw bound_username instead, so nothing is silently
+// dropped from the overview.
+function listAllOrdersForOverview() {
+  return db
+    .prepare(
+      `SELECT * FROM orders
+       ORDER BY COALESCE(bound_username, ''), telegram_id IS NULL, telegram_id, created_at`
+    )
+    .all();
+}
+
 // --- status history ---
 
 function appendStatusHistory({ orderNumber, statusText, comment, source }) {
@@ -266,6 +279,7 @@ module.exports = {
   updateOrderStatus,
   listOrdersForClient,
   listActiveOrdersWithClients,
+  listAllOrdersForOverview,
   STAGES,
   getStageInfo,
   appendStatusHistory,

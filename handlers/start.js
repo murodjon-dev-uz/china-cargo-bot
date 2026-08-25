@@ -1,9 +1,24 @@
 const queries = require('../db/queries');
 const { mainMenu } = require('../keyboards');
+const { isManager } = require('../lib/roles');
 
-const GREETING =
-  'Здравствуйте! Это логистика China Cargo. Нажмите кнопку "Мои заявки", чтобы увидеть свои грузы, ' +
-  'или "Связь с менеджером", если нужна помощь.';
+// Leads with what the client came for (where is my cargo), then names each
+// button and what it does — so the first screen doubles as the instructions.
+const GREETING_CLIENT = [
+  '👋 <b>China Cargo</b> — отслеживание грузов',
+  '',
+  'Здесь видно, где сейчас ваш груз и когда он приедет.',
+  '',
+  '📦 <b>Мои заявки</b> — статус и путь каждого груза',
+  '💬 <b>Связь с менеджером</b> — если нужна помощь',
+].join('\n');
+
+const GREETING_MANAGER = [
+  '👋 <b>China Cargo</b> — панель менеджера',
+  '',
+  '📋 <b>Все заявки</b> — грузы всех клиентов, по каждому клиенту',
+  '💬 <b>Связь с менеджером</b> — написать в рабочий чат',
+].join('\n');
 
 function registerStart(bot) {
   bot.start((ctx) => {
@@ -13,7 +28,12 @@ function registerStart(bot) {
       firstName: ctx.from.first_name,
     });
     queries.resolveClientBindings();
-    return ctx.reply(GREETING, mainMenu());
+
+    const manager = isManager(ctx.from.id);
+    return ctx.reply(manager ? GREETING_MANAGER : GREETING_CLIENT, {
+      parse_mode: 'HTML',
+      ...mainMenu(manager),
+    });
   });
 
   // Keep the client record fresh (username can change) on every message, not just /start.
@@ -29,4 +49,4 @@ function registerStart(bot) {
   });
 }
 
-module.exports = { registerStart, GREETING };
+module.exports = { registerStart, GREETING_CLIENT, GREETING_MANAGER };
