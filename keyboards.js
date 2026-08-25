@@ -13,14 +13,15 @@ const BACK_BUTTON = '‹ К списку заявок';
 
 /**
  * The bot's only navigation surface, pinned open under the message box.
- * Managers and the owner track every client's shipments, so their primary
- * action is "Все заявки" — they never have orders of their own to look at.
+ * Managers get both views — every client's shipments ("Все заявки") and the
+ * card view of orders booked under their own account ("Мои заявки") — on the
+ * top row, with support underneath.
  */
 function mainMenu(isManager = false) {
-  const primary = isManager ? ALL_ORDERS_BUTTON : MY_ORDERS_BUTTON;
-  return Markup.keyboard([[primary, CONTACT_MANAGER_BUTTON]])
-    .resize()
-    .persistent();
+  const rows = isManager
+    ? [[ALL_ORDERS_BUTTON, MY_ORDERS_BUTTON], [CONTACT_MANAGER_BUTTON]]
+    : [[MY_ORDERS_BUTTON, CONTACT_MANAGER_BUTTON]];
+  return Markup.keyboard(rows).resize().persistent();
 }
 
 /**

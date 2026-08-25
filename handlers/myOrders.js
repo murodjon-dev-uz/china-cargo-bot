@@ -1,5 +1,6 @@
 const queries = require('../db/queries');
 const { MY_ORDERS_BUTTON, ordersList, backToOrdersList } = require('../keyboards');
+const { isManager } = require('../lib/roles');
 const {
   formatDateRu,
   formatDateShortRu,
@@ -29,20 +30,31 @@ function ordersListText(active, delivered) {
   return lines.join('\n');
 }
 
-// Empty state answers the two questions a client actually has: why is this
-// blank, and what do I do about it.
-const EMPTY_STATE = [
-  '📦 <b>Заявок пока нет</b>',
-  '',
-  'Как только менеджер оформит заявку, она появится здесь.',
-  '',
-  'Уже отправили груз? Нажмите «💬 Связь с менеджером» — проверим.',
-].join('\n');
+// Answers the two questions the reader actually has: why is this blank, and
+// what do I do about it — which differs by role, since a manager looking at
+// an empty personal list wants pointing at the all-clients view instead.
+function emptyState(forManager) {
+  return forManager
+    ? [
+        '📦 <b>Личных заявок нет</b>',
+        '',
+        'Здесь появятся заявки, оформленные на ваш аккаунт.',
+        '',
+        'Грузы клиентов — на кнопке «📋 Все заявки».',
+      ].join('\n')
+    : [
+        '📦 <b>Заявок пока нет</b>',
+        '',
+        'Как только менеджер оформит заявку, она появится здесь.',
+        '',
+        'Уже отправили груз? Нажмите «💬 Связь с менеджером» — проверим.',
+      ].join('\n');
+}
 
 function renderOrdersList(ctx) {
   const orders = queries.listOrdersForClient(ctx.from.id);
   if (orders.length === 0) {
-    return ctx.reply(EMPTY_STATE, { parse_mode: 'HTML' });
+    return ctx.reply(emptyState(isManager(ctx.from.id)), { parse_mode: 'HTML' });
   }
   const { active, delivered, ordered } = sortForClient(orders);
   return ctx.reply(ordersListText(active, delivered), {
@@ -124,7 +136,7 @@ function registerMyOrders(bot) {
     const orders = queries.listOrdersForClient(ctx.from.id);
     await ctx.answerCbQuery();
     if (orders.length === 0) {
-      return ctx.editMessageText(EMPTY_STATE, { parse_mode: 'HTML' });
+      return ctx.editMessageText(emptyState(isManager(ctx.from.id)), { parse_mode: 'HTML' });
     }
     const { active, delivered, ordered } = sortForClient(orders);
     return ctx.editMessageText(ordersListText(active, delivered), {
