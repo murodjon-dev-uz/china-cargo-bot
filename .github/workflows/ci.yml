@@ -30,7 +30,6 @@ jobs:
       DATABASE_URL: postgresql://china_cargo:ci@127.0.0.1:5432/china_cargo
       BOT_TOKEN: ci-placeholder
       MANAGER_GROUP_CHAT_ID: '-1'
-      MANAGER_TELEGRAM_IDS: '1'
       SPREADSHEET_ID: ci-placeholder
       GOOGLE_SERVICE_ACCOUNT_KEY_PATH: ./service-account.json
       WEBHOOK_SECRET: ci-placeholder

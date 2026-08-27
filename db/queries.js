@@ -4,6 +4,7 @@ const { normalizePhone } = require('../lib/phone');
 
 const STAGES = { AT_FACTORY: { emoji: '🏭', label: 'На заводе' }, IN_TRANSIT: { emoji: '🚚', label: 'В пути' }, DELIVERED: { emoji: '✅', label: 'Доставлен' } };
 const DEFAULT_STAGE = 'AT_FACTORY';
+const ROLES = ['client', 'manager'];
 const STAGE_BY_CELL_TEXT = Object.fromEntries(Object.entries(STAGES).map(([code, value]) => [`${value.emoji} ${value.label}`, code]));
 const nowIso = () => new Date().toISOString();
 const normalizeStage = (stage) => stage && (STAGES[stage] ? stage : STAGE_BY_CELL_TEXT[String(stage).trim()]) || null;
@@ -35,7 +36,8 @@ async function findContact(phone, client) {
  * MUST pass every row of the tab, not just the edited ones — a partial list
  * would silently revoke everyone missing from it.
  */
-async function replaceContacts(rows, client) {
+async function replaceContacts(rows, role, client) {
+  if (!ROLES.includes(role)) throw new Error(`Unknown contact role: ${role}`);
   const db = runner(client);
   const now = nowIso();
   const seen = [];
@@ -43,11 +45,13 @@ async function replaceContacts(rows, client) {
     const phone = normalizePhone(row.phone);
     if (!phone || seen.includes(phone)) continue;
     seen.push(phone);
-    await db.query(`INSERT INTO contacts(phone,full_name,sheet_row,synced_at) VALUES($1,$2,$3,$4)
-      ON CONFLICT(phone) DO UPDATE SET full_name=EXCLUDED.full_name,sheet_row=EXCLUDED.sheet_row,synced_at=EXCLUDED.synced_at`,
-    [phone, row.fullName || null, row.sheetRow || null, now]);
+    await db.query(`INSERT INTO contacts(phone,full_name,role,sheet_row,synced_at) VALUES($1,$2,$3,$4,$5)
+      ON CONFLICT(phone) DO UPDATE SET full_name=EXCLUDED.full_name,role=EXCLUDED.role,sheet_row=EXCLUDED.sheet_row,synced_at=EXCLUDED.synced_at`,
+    [phone, row.fullName || null, role, row.sheetRow || null, now]);
   }
-  const removed = (await db.query('DELETE FROM contacts WHERE NOT (phone = ANY($1::text[]))', [seen])).rowCount;
+  // Scoped to this role: each sheet reconciles its own list, so syncing the
+  // client tab must never revoke a manager and vice versa.
+  const removed = (await db.query('DELETE FROM contacts WHERE role=$1 AND NOT (phone = ANY($2::text[]))', [role, seen])).rowCount;
   return { kept: seen.length, removed };
 }
 
@@ -58,17 +62,17 @@ async function replaceContacts(rows, client) {
  */
 async function getAuthorizedClient(telegramId, client) {
   return (await runner(client).query(
-    `SELECT c.*, ct.full_name AS contact_name FROM clients c
+    `SELECT c.*, ct.full_name AS contact_name, ct.role FROM clients c
      JOIN contacts ct ON ct.phone = c.phone
      WHERE c.telegram_id=$1 AND c.registration_state='REGISTERED'`, [telegramId])).rows[0] || null;
 }
 
-async function listContactsForWriteback(client) {
+async function listContactsForWriteback(role, client) {
   return (await runner(client).query(
     `SELECT ct.phone, ct.sheet_row, c.telegram_id, c.registration_completed_at
      FROM contacts ct LEFT JOIN clients c
        ON c.phone = ct.phone AND c.registration_state='REGISTERED'
-     WHERE ct.sheet_row IS NOT NULL`)).rows;
+     WHERE ct.sheet_row IS NOT NULL AND ct.role=$1`, [role])).rows;
 }
 
 async function completeClientRegistration(telegramId, phone, client) {
@@ -136,4 +140,4 @@ async function recordDigestResult(date,clients,delivered){await pool.query('UPDA
 async function releaseDigestDate(date){await pool.query('DELETE FROM digest_log WHERE digest_date=$1',[date]);}
 async function recordManagerAction(data,client){await runner(client).query('INSERT INTO manager_actions_log(manager_telegram_id,order_number,new_status_text,comment,created_at) VALUES($1,$2,$3,$4,$5)',[data.managerTelegramId,data.orderNumber,data.statusText||null,data.comment||null,nowIso()]);}
 
-module.exports={withTransaction,contentHash,upsertClient,getClient,setClientName,completeClientRegistration,findContact,replaceContacts,getAuthorizedClient,listContactsForWriteback,createOrder,findOrder,updateOrder,upsertOrderMasterData,resolveClientBindings,updateOrderStatus,listOrdersForClient,listActiveOrdersWithClients,listAllOrdersForOverview,STAGES,getStageInfo,appendStatusHistory,getOrderHistory,replaceSheetStatusHistory,recordSyncLog,hasSyncedBefore,claimDigestDate,recordDigestResult,releaseDigestDate,recordManagerAction};
+module.exports={withTransaction,contentHash,upsertClient,getClient,setClientName,completeClientRegistration,findContact,replaceContacts,getAuthorizedClient,listContactsForWriteback,ROLES,createOrder,findOrder,updateOrder,upsertOrderMasterData,resolveClientBindings,updateOrderStatus,listOrdersForClient,listActiveOrdersWithClients,listAllOrdersForOverview,STAGES,getStageInfo,appendStatusHistory,getOrderHistory,replaceSheetStatusHistory,recordSyncLog,hasSyncedBefore,claimDigestDate,recordDigestResult,releaseDigestDate,recordManagerAction};

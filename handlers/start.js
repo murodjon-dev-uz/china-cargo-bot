@@ -24,11 +24,12 @@ const GREETING_MANAGER = [
 
 function registerStart(bot) {
   bot.start(async (ctx) => {
-    if (isManager(ctx.from.id)) {
+    // Managers no longer bypass this: they are on their own access list and
+    // confirm their phone exactly like everyone else.
+    if (isManager(ctx)) {
       return ctx.reply(GREETING_MANAGER, { parse_mode: 'HTML', ...mainMenu(true) });
     }
-    const client = await queries.getAuthorizedClient(ctx.from.id);
-    if (client) {
+    if (ctx.state.account) {
       await queries.resolveClientBindings();
       return ctx.reply(GREETING_CLIENT, { parse_mode: 'HTML', ...mainMenu(false) });
     }
@@ -36,7 +37,7 @@ function registerStart(bot) {
   });
 
   bot.on('contact', async (ctx, next) => {
-    if (isManager(ctx.from.id)) return next();
+    if (isManager(ctx)) return next();
 
     // A contact card can be forwarded from anyone; only the one Telegram
     // itself attaches to the sender carries a user_id equal to theirs. This

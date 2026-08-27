@@ -41,7 +41,7 @@ const dbTest = (name, fn) => test(name, async (t) => {
 });
 
 dbTest('a phone on the access list authorizes its owner', async (db) => {
-  await queries.replaceContacts([{ phone: ALLOWED, fullName: 'Алишер', sheetRow: 2 }], db);
+  await queries.replaceContacts([{ phone: ALLOWED, fullName: 'Алишер', sheetRow: 2 }], 'client', db);
   await queries.upsertClient({ telegramId: TELEGRAM_ID, firstName: 'A' }, db);
 
   const result = await queries.completeClientRegistration(TELEGRAM_ID, ALLOWED, db);
@@ -54,7 +54,7 @@ dbTest('a phone on the access list authorizes its owner', async (db) => {
 });
 
 dbTest('a phone missing from the access list is refused', async (db) => {
-  await queries.replaceContacts([{ phone: ALLOWED, fullName: 'Алишер', sheetRow: 2 }], db);
+  await queries.replaceContacts([{ phone: ALLOWED, fullName: 'Алишер', sheetRow: 2 }], 'client', db);
   await queries.upsertClient({ telegramId: TELEGRAM_ID, firstName: 'A' }, db);
 
   await assert.rejects(
@@ -65,20 +65,39 @@ dbTest('a phone missing from the access list is refused', async (db) => {
 });
 
 dbTest('removing the number from the sheet revokes an existing login', async (db) => {
-  await queries.replaceContacts([{ phone: ALLOWED, fullName: 'Алишер', sheetRow: 2 }], db);
+  await queries.replaceContacts([{ phone: ALLOWED, fullName: 'Алишер', sheetRow: 2 }], 'client', db);
   await queries.upsertClient({ telegramId: TELEGRAM_ID, firstName: 'A' }, db);
   await queries.completeClientRegistration(TELEGRAM_ID, ALLOWED, db);
   assert.ok(await queries.getAuthorizedClient(TELEGRAM_ID, db));
 
   // The manager deletes the row: the next sync sends a list without it.
-  const result = await queries.replaceContacts([{ phone: STRANGER, fullName: 'Кто-то', sheetRow: 2 }], db);
+  const result = await queries.replaceContacts([{ phone: STRANGER, fullName: 'Кто-то', sheetRow: 2 }], 'client', db);
   assert.equal(result.removed, 1);
   assert.equal(await queries.getAuthorizedClient(TELEGRAM_ID, db), null);
 });
 
+dbTest('the "Менеджеры" list makes its number a manager', async (db) => {
+  await queries.replaceContacts([{ phone: ALLOWED, fullName: 'Мурод', sheetRow: 2 }], 'manager', db);
+  await queries.upsertClient({ telegramId: TELEGRAM_ID, firstName: 'M' }, db);
+
+  const result = await queries.completeClientRegistration(TELEGRAM_ID, ALLOWED, db);
+  assert.equal(result.contact.role, 'manager');
+  assert.equal((await queries.getAuthorizedClient(TELEGRAM_ID, db)).role, 'manager');
+});
+
+dbTest('syncing one list never revokes the other role', async (db) => {
+  await queries.replaceContacts([{ phone: ALLOWED, fullName: 'Мурод', sheetRow: 2 }], 'manager', db);
+  await queries.replaceContacts([{ phone: STRANGER, fullName: 'Клиент', sheetRow: 2 }], 'client', db);
+
+  // Clearing the client tab must leave the manager standing.
+  const result = await queries.replaceContacts([], 'client', db);
+  assert.equal(result.removed, 1);
+  assert.ok(await queries.findContact(ALLOWED, db), 'manager should survive a client-list sync');
+});
+
 dbTest('the access list is matched on the normalized number, not the raw text', async (db) => {
   // The manager types the number by hand, so it arrives in whatever shape.
-  await queries.replaceContacts([{ phone: '90 111-22-33', fullName: 'Алишер', sheetRow: 2 }], db);
+  await queries.replaceContacts([{ phone: '90 111-22-33', fullName: 'Алишер', sheetRow: 2 }], 'client', db);
   await queries.upsertClient({ telegramId: TELEGRAM_ID, firstName: 'A' }, db);
 
   // Telegram delivers it without a plus, digits only.

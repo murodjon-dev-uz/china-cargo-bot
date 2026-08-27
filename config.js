@@ -7,19 +7,6 @@ function required(name) {
   return value;
 }
 
-function requiredIdList(name) {
-  const ids = required(name)
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((s) => {
-      const num = Number(s);
-      if (isNaN(num)) throw new Error(`Invalid ID in ${name}: "${s}" is not a number`);
-      return num;
-    });
-  return ids;
-}
-
 module.exports = {
   botToken: required('BOT_TOKEN'),
   managerGroupChatId: Number(required('MANAGER_GROUP_CHAT_ID')),
@@ -29,7 +16,6 @@ module.exports = {
   managerGroupTopicId: process.env.MANAGER_GROUP_TOPIC_ID
     ? Number(process.env.MANAGER_GROUP_TOPIC_ID)
     : null,
-  managerTelegramIds: requiredIdList('MANAGER_TELEGRAM_IDS'),
   spreadsheetId: required('SPREADSHEET_ID'),
   googleServiceAccountKeyPath: path.resolve(required('GOOGLE_SERVICE_ACCOUNT_KEY_PATH')),
   webhookSecret: required('WEBHOOK_SECRET'),
@@ -45,6 +31,9 @@ module.exports = {
     // only a phone present here can log into the bot. The last two columns
     // are written back by the sync layer, never by the bot itself.
     contactsTab: 'Контакты',
+    // Same four columns as "Контакты". Being on this tab instead is the only
+    // thing that makes someone a manager.
+    managersTab: 'Менеджеры',
     contactNameCol: 'Имя клиента',
     contactPhoneCol: 'Номер телефона',
     contactStatusCol: 'Статус',

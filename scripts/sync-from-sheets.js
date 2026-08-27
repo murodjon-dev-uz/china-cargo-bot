@@ -26,32 +26,39 @@ function statusesFromRow(row) {
  * lives in the sync layer on purpose: the bot process itself never talks to
  * Google, it only ever reads the mirrored table in Postgres.
  */
-async function writeBackLoginStatus() {
-  const rows = await queries.listContactsForWriteback();
+async function writeBackLoginStatus(tab, role) {
+  const rows = await queries.listContactsForWriteback(role);
   for (const row of rows) {
     const joined = row.registration_completed_at
       ? new Date(row.registration_completed_at).toISOString().slice(0, 10)
       : '';
-    await sheets.writeCell(config.sheets.contactsTab, row.sheet_row, CONTACT_STATUS_COLUMN, row.telegram_id ? 'Вошёл' : '');
-    await sheets.writeCell(config.sheets.contactsTab, row.sheet_row, CONTACT_JOINED_COLUMN, joined);
+    await sheets.writeCell(tab, row.sheet_row, CONTACT_STATUS_COLUMN, row.telegram_id ? 'Вошёл' : '');
+    await sheets.writeCell(tab, row.sheet_row, CONTACT_JOINED_COLUMN, joined);
   }
   return rows.length;
+}
+
+/** Mirrors one access-list tab into contacts, scoped to its role. */
+async function syncAccessList(tab, role) {
+  const rows = await sheets.readTab(tab);
+  return queries.withTransaction((client) => queries.replaceContacts(
+    rows.map((row) => ({
+      fullName: row[config.sheets.contactNameCol] || null,
+      phone: row[config.sheets.contactPhoneCol] || null,
+      sheetRow: row._row,
+    })),
+    role,
+    client
+  ));
 }
 
 async function main() {
   await migrate();
 
-  // The access list goes first: an order row is useless to a client who
-  // cannot log in, and a number added in this run should work immediately.
-  const contactRows = await sheets.readTab(config.sheets.contactsTab);
-  const contacts = await queries.withTransaction((client) => queries.replaceContacts(
-    contactRows.map((row) => ({
-      fullName: row[config.sheets.contactNameCol] || null,
-      phone: row[config.sheets.contactPhoneCol] || null,
-      sheetRow: row._row,
-    })),
-    client
-  ));
+  // The access lists go first: an order row is useless to a client who cannot
+  // log in, and a number added in this run should work immediately.
+  const contacts = await syncAccessList(config.sheets.contactsTab, 'client');
+  const managers = await syncAccessList(config.sheets.managersTab, 'manager');
 
   const orderRows = await sheets.readTab(config.sheets.ordersTab);
   const trackingRows = await sheets.readTab(config.sheets.trackingTab);
@@ -83,10 +90,12 @@ async function main() {
     }
   });
 
-  const writtenBack = await writeBackLoginStatus();
+  await writeBackLoginStatus(config.sheets.contactsTab, 'client');
+  await writeBackLoginStatus(config.sheets.managersTab, 'manager');
 
   console.log(JSON.stringify({
-    contacts: contacts.kept, revoked: contacts.removed, writtenBack,
+    clients: contacts.kept, clientsRevoked: contacts.removed,
+    managers: managers.kept, managersRevoked: managers.removed,
     orders: orderRows.length, trackingRows: trackingRows.length, histories,
   }));
 }

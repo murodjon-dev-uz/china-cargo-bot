@@ -20,8 +20,8 @@ let shuttingDown = false;
 
 // Registration order is the authorization boundary, not a style choice.
 //
-// 1. Every update touches the client row first, so last_seen_at stays honest
-//    even for someone who never gets past the gate.
+// 1. Every update touches the client row first and resolves who is asking, so
+//    last_seen_at stays honest even for someone who never gets past the gate.
 // 2. registerStart runs BEFORE the gate: /start and the shared contact are
 //    the only two things an unauthorized person may do — they are the way in.
 // 3. requireAuthorized closes everything after it. Beyond this line a
@@ -31,7 +31,13 @@ let shuttingDown = false;
 //    менеджером" is handled by those, not swallowed as a pending
 //    status-comment reply.
 bot.use(async (ctx, next) => {
-  if (ctx.from) await queries.upsertClient({ telegramId: ctx.from.id, firstName: ctx.from.first_name });
+  if (ctx.from) {
+    await queries.upsertClient({ telegramId: ctx.from.id, firstName: ctx.from.first_name });
+    // One lookup per update, shared by the gate, the role check and the
+    // handlers. Null means "not on any access list" — which is also how a
+    // manager whose row was deleted stops being a manager.
+    ctx.state.account = await queries.getAuthorizedClient(ctx.from.id);
+  }
   return next();
 });
 

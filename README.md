@@ -36,9 +36,9 @@ Copy `deploy/google-apps-script.gs` into the spreadsheet's Apps Script project. 
 
 Run `onOpen`, return to the sheet and choose **China Cargo → Enable auto-sync**.
 
-## Access list and client login
+## Access lists and login
 
-The bot is closed. A phone number must already be listed on the **`Контакты`** tab before its owner can use the bot at all.
+The bot is closed. A phone number must already be listed on the **`Контакты`** tab (clients) or the **`Менеджеры`** tab (managers) before its owner can use the bot at all. There is no list of Telegram IDs anywhere: which tab a number sits on is the only thing that decides its role, and managers confirm their phone exactly like clients do.
 
 | Column | Filled by |
 | --- | --- |
@@ -55,7 +55,9 @@ Orders are linked to clients exclusively by the normalized value in the `Тел�
 
 The bot process itself never calls Google. The access list reaches it only through Postgres — filled by the Apps Script webhook on every edit, or by `npm run sync`.
 
-To set the tab up, use **China Cargo → Setup "Контакты" sheet** in the spreadsheet menu.
+Both tabs have the same four columns. To create them, use **China Cargo → Setup "Контакты" sheet** and **Setup "Менеджеры" sheet** in the spreadsheet menu.
+
+Each tab reconciles only its own role, so syncing the client list can never revoke a manager.
 
 ## Operations
 

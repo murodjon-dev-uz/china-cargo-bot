@@ -26,6 +26,9 @@ const TRACKING_SHEET_NAME = 'Трекинг';
 const ORDERS_SHEET_NAME = 'Заявки';
 // Access list: a phone must be on this tab for its owner to use the bot.
 const CONTACTS_SHEET_NAME = 'Контакты';
+// Same columns as "Контакты". Being listed here instead is what makes
+// someone a manager — there is no list of Telegram IDs anywhere.
+const MANAGERS_SHEET_NAME = 'Менеджеры';
 const CONTACT_NAME_HEADER = 'Имя клиента';
 const CONTACT_PHONE_HEADER = 'Номер телефона';
 const CONTACT_HEADERS = [CONTACT_NAME_HEADER, CONTACT_PHONE_HEADER, 'Статус', 'Дата входа'];
@@ -49,6 +52,7 @@ function onOpen() {
     .addItem('Disable auto-sync', 'disableAutoSync')
     .addItem('Setup "Этап" column', 'setupStageColumn')
     .addItem('Setup "Контакты" sheet', 'setupContactsSheet')
+    .addItem('Setup "Менеджеры" sheet', 'setupManagersSheet')
     .addItem('Sync contacts now', 'syncContacts')
     .addToUi();
 }
@@ -86,10 +90,18 @@ function setupStageColumn() {
 // One-time (idempotent) setup: creates the access-list tab with its four
 // headers if it is missing. Existing rows are never touched.
 function setupContactsSheet() {
+  setupAccessSheet(CONTACTS_SHEET_NAME);
+}
+
+function setupManagersSheet() {
+  setupAccessSheet(MANAGERS_SHEET_NAME);
+}
+
+function setupAccessSheet(name) {
   const spreadsheet = SpreadsheetApp.getActive();
-  let sheet = spreadsheet.getSheetByName(CONTACTS_SHEET_NAME);
+  let sheet = spreadsheet.getSheetByName(name);
   if (!sheet) {
-    sheet = spreadsheet.insertSheet(CONTACTS_SHEET_NAME);
+    sheet = spreadsheet.insertSheet(name);
   }
   const width = CONTACT_HEADERS.length;
   const existing = sheet.getRange(1, 1, 1, width).getValues()[0];
@@ -99,17 +111,17 @@ function setupContactsSheet() {
     sheet.setFrozenRows(1);
     sheet.getRange(2, 2, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // keep +998... as text
   }
-  SpreadsheetApp.getUi().alert('Лист "' + CONTACTS_SHEET_NAME + '" готов. Заполняйте "' + CONTACT_NAME_HEADER + '" и "' + CONTACT_PHONE_HEADER + '". ✅');
+  SpreadsheetApp.getUi().alert('Лист "' + name + '" готов. Заполняйте "' + CONTACT_NAME_HEADER + '" и "' + CONTACT_PHONE_HEADER + '". ✅');
 }
 
 // Sends the WHOLE access list. Never send a subset: the bot reconciles against
 // this payload, so a number missing from it is treated as revoked.
-function pushContacts() {
-  const sheet = SpreadsheetApp.getActive().getSheetByName(CONTACTS_SHEET_NAME);
+function pushContacts(sheetName, role) {
+  const sheet = SpreadsheetApp.getActive().getSheetByName(sheetName);
   if (!sheet) return 0;
   const data = sheet.getDataRange().getValues();
   if (data.length < 2) {
-    sendWebhook('/webhook/contacts-sync', { rows: [] });
+    sendWebhook('/webhook/contacts-sync', { role: role, rows: [] });
     return 0;
   }
   const headers = data[0];
@@ -120,13 +132,14 @@ function pushContacts() {
     if (!phone) continue;
     rows.push({ name: getCell(headers, rowData, CONTACT_NAME_HEADER), phone: phone, row: row });
   }
-  sendWebhook('/webhook/contacts-sync', { rows: rows });
+  sendWebhook('/webhook/contacts-sync', { role: role, rows: rows });
   return rows.length;
 }
 
 function syncContacts() {
-  const count = pushContacts();
-  SpreadsheetApp.getUi().alert('Отправлено номеров: ' + count + ' ✅');
+  const clients = pushContacts(CONTACTS_SHEET_NAME, 'client');
+  const managers = pushContacts(MANAGERS_SHEET_NAME, 'manager');
+  SpreadsheetApp.getUi().alert('Клиентов: ' + clients + ', менеджеров: ' + managers + ' ✅');
 }
 
 function enableAutoSync() {
@@ -160,7 +173,12 @@ function onEdit(e) {
   const sheetName = sheet.getName();
 
   if (sheetName === CONTACTS_SHEET_NAME) {
-    pushContacts();
+    pushContacts(CONTACTS_SHEET_NAME, 'client');
+    return;
+  }
+
+  if (sheetName === MANAGERS_SHEET_NAME) {
+    pushContacts(MANAGERS_SHEET_NAME, 'manager');
     return;
   }
 

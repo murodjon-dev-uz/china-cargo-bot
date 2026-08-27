@@ -151,20 +151,20 @@ async function renderTextExport() {
 
 function registerManagerCommands(bot) {
   bot.hears(ALL_ORDERS_BUTTON, async (ctx) => {
-    if (!isManager(ctx.from.id)) return; // silently ignore non-managers
+    if (!isManager(ctx)) return; // silently ignore non-managers
     const { text, extra } = await clientsOverview();
     return ctx.reply(text, { parse_mode: 'HTML', ...extra });
   });
 
   bot.action('mgr:all', async (ctx) => {
-    if (!isManager(ctx.from.id)) return ctx.answerCbQuery();
+    if (!isManager(ctx)) return ctx.answerCbQuery();
     await ctx.answerCbQuery();
     const { text, extra } = await clientsOverview();
     return ctx.editMessageText(text, { parse_mode: 'HTML', ...extra });
   });
 
   bot.action(/^mgr:g:(.+)$/, async (ctx) => {
-    if (!isManager(ctx.from.id)) return ctx.answerCbQuery();
+    if (!isManager(ctx)) return ctx.answerCbQuery();
     const view = await clientOrdersView(ctx.match[1]);
     if (!view) return ctx.answerCbQuery('Клиент не найден', { show_alert: true });
     await ctx.answerCbQuery();
@@ -174,7 +174,7 @@ function registerManagerCommands(bot) {
   // Managers open any client's order in the same card the client sees, so
   // what they check on the phone is exactly what the client is looking at.
   bot.action(/^mgr:o:(.+)$/, async (ctx) => {
-    if (!isManager(ctx.from.id)) return ctx.answerCbQuery();
+    if (!isManager(ctx)) return ctx.answerCbQuery();
     const orderNumber = ctx.match[1];
     const order = await queries.findOrder(orderNumber);
     if (!order) return ctx.answerCbQuery('Заявка не найдена', { show_alert: true });
@@ -187,7 +187,7 @@ function registerManagerCommands(bot) {
 
   // Full text export — everything at once, for scanning or copying out.
   bot.command('all_orders', async (ctx) => {
-    if (!isManager(ctx.from.id)) return;
+    if (!isManager(ctx)) return;
     await ctx.sendChatAction('typing').catch(() => {});
     for (const message of await renderTextExport()) {
       await ctx.reply(message, { parse_mode: 'HTML' });
@@ -195,7 +195,7 @@ function registerManagerCommands(bot) {
   });
 
   bot.command('status', async (ctx) => {
-    if (!isManager(ctx.from.id)) return; // silently ignore non-managers
+    if (!isManager(ctx)) return; // silently ignore non-managers
 
     const orderNumber = ctx.message.text.split(/\s+/)[1];
     if (!orderNumber) {
@@ -215,7 +215,7 @@ function registerManagerCommands(bot) {
   // Plain-text status reply — this is a manager-only exception to
   // "no free text" (see plan §8); the text becomes exactly what the client sees.
   bot.on('text', async (ctx, next) => {
-    if (!isManager(ctx.from.id)) return next();
+    if (!isManager(ctx)) return next();
     const orderNumber = pendingStatus.get(ctx.from.id);
     if (!orderNumber) return next();
     // A menu tap is navigation, not a status — don't publish "📋 Все заявки"
