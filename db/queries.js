@@ -6,6 +6,12 @@ const { parseDecimal } = require('../lib/format');
 const STAGES = { AT_FACTORY: { emoji: '🏭', label: 'На заводе' }, IN_TRANSIT: { emoji: '🚚', label: 'В пути' }, DELIVERED: { emoji: '✅', label: 'Доставлен' } };
 const DEFAULT_STAGE = 'AT_FACTORY';
 const ROLES = ['client', 'manager'];
+
+// Every order read carries its payment total, because "how much is still
+// owed" is asked everywhere an order is shown — the client's card, the
+// manager's list, the overview totals. Computing it in one place keeps those
+// three from ever disagreeing.
+const ORDER_SELECT = `o.*, COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.order_number = o.order_number), 0) AS paid`;
 const STAGE_BY_CELL_TEXT = Object.fromEntries(Object.entries(STAGES).map(([code, value]) => [`${value.emoji} ${value.label}`, code]));
 const nowIso = () => new Date().toISOString();
 const normalizeStage = (stage) => stage && (STAGES[stage] ? stage : STAGE_BY_CELL_TEXT[String(stage).trim()]) || null;
@@ -119,7 +125,7 @@ async function createOrder(data, client) {
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17)`,
   [data.orderNumber,data.cargoDescription||null,data.route||null,data.etaDate||null,data.currentStatus||null,data.telegramId||null,data.clientName||null,normalizePhone(data.boundPhone),normalizeStage(data.stage)||DEFAULT_STAGE,...cargoFields(data),now]);
 }
-async function findOrder(orderNumber, client) { return (await runner(client).query('SELECT * FROM orders WHERE order_number=$1',[orderNumber])).rows[0]; }
+async function findOrder(orderNumber, client) { return (await runner(client).query(`SELECT ${ORDER_SELECT} FROM orders o WHERE o.order_number=$1`,[orderNumber])).rows[0]; }
 async function updateOrder(data, client) { await runner(client).query('UPDATE orders SET cargo_description=$1,route=$2,eta_date=$3,client_name=$4,bound_phone=$5,updated_at=$6 WHERE order_number=$7',[data.cargoDescription,data.route,data.etaDate||null,data.clientName,normalizePhone(data.boundPhone),nowIso(),data.orderNumber]); }
 async function upsertOrderMasterData(data, client) {
   const existing = await findOrder(data.orderNumber, client);
@@ -141,9 +147,33 @@ async function resolveClientBindings(client) {
     WHERE o.bound_phone IS NOT NULL AND c.phone=o.bound_phone AND o.telegram_id IS DISTINCT FROM c.telegram_id`,[now])).rowCount;
 }
 async function updateOrderStatus(data, client) { await runner(client).query('UPDATE orders SET current_status=$1,current_comment=$2,updated_at=$3 WHERE order_number=$4',[data.statusText,data.comment||null,nowIso(),data.orderNumber]); }
-async function listOrdersForClient(id) { return (await pool.query('SELECT * FROM orders WHERE telegram_id=$1 ORDER BY created_at DESC',[id])).rows; }
-async function listActiveOrdersWithClients() { return (await pool.query("SELECT * FROM orders WHERE telegram_id IS NOT NULL AND stage!='DELIVERED' ORDER BY telegram_id")).rows; }
-async function listAllOrdersForOverview() { return (await pool.query("SELECT * FROM orders ORDER BY COALESCE(client_name,''),telegram_id NULLS LAST,created_at")).rows; }
+async function listOrdersForClient(id) { return (await pool.query(`SELECT ${ORDER_SELECT} FROM orders o WHERE o.telegram_id=$1 ORDER BY o.created_at DESC`,[id])).rows; }
+async function listActiveOrdersWithClients() { return (await pool.query(`SELECT ${ORDER_SELECT} FROM orders o WHERE o.telegram_id IS NOT NULL AND o.stage!='DELIVERED' ORDER BY o.telegram_id`)).rows; }
+async function listAllOrdersForOverview() { return (await pool.query(`SELECT ${ORDER_SELECT} FROM orders o ORDER BY COALESCE(o.client_name,''),o.telegram_id NULLS LAST,o.created_at`)).rows; }
+
+/**
+ * Reconciles the whole payment ledger. Rows carry no stable identity in the
+ * sheet — a manager may insert, edit or delete any line — so replacing the
+ * lot is both simpler and more correct than trying to diff them.
+ */
+async function replacePayments(rows, client) {
+  const db = runner(client);
+  const now = nowIso();
+  await db.query('DELETE FROM payments');
+  let inserted = 0;
+  for (const row of rows) {
+    const amount = parseDecimal(row.amount);
+    if (!row.orderNumber || amount === null) continue;
+    await db.query('INSERT INTO payments(order_number,paid_on,amount,currency,note,sheet_row,synced_at) VALUES($1,$2,$3,$4,$5,$6,$7)',
+      [row.orderNumber, row.paidOn || null, amount, row.currency || null, row.note || null, row.sheetRow || null, now]);
+    inserted++;
+  }
+  return { inserted };
+}
+
+async function listPaymentsForOrder(orderNumber, client) {
+  return (await runner(client).query('SELECT * FROM payments WHERE order_number=$1 ORDER BY paid_on NULLS LAST, id', [orderNumber])).rows;
+}
 async function appendStatusHistory(data, client) { await runner(client).query('INSERT INTO status_history(order_number,status_text,comment,changed_at,source) VALUES($1,$2,$3,$4,$5)',[data.orderNumber,data.statusText,data.comment||null,nowIso(),data.source||'manual']); }
 async function getOrderHistory(orderNumber) { return (await pool.query(`SELECT * FROM (SELECT h.*,ROW_NUMBER() OVER(PARTITION BY status_text ORDER BY changed_at DESC) rn FROM status_history h WHERE order_number=$1) x WHERE rn=1 ORDER BY changed_at`,[orderNumber])).rows; }
 async function replaceSheetStatusHistory(orderNumber, statuses, client) {
@@ -158,4 +188,4 @@ async function recordDigestResult(date,clients,delivered){await pool.query('UPDA
 async function releaseDigestDate(date){await pool.query('DELETE FROM digest_log WHERE digest_date=$1',[date]);}
 async function recordManagerAction(data,client){await runner(client).query('INSERT INTO manager_actions_log(manager_telegram_id,order_number,new_status_text,comment,created_at) VALUES($1,$2,$3,$4,$5)',[data.managerTelegramId,data.orderNumber,data.statusText||null,data.comment||null,nowIso()]);}
 
-module.exports={withTransaction,contentHash,upsertClient,getClient,setClientName,completeClientRegistration,findContact,replaceContacts,getAuthorizedClient,listContactsForWriteback,ROLES,createOrder,findOrder,updateOrder,upsertOrderMasterData,resolveClientBindings,updateOrderStatus,listOrdersForClient,listActiveOrdersWithClients,listAllOrdersForOverview,STAGES,getStageInfo,appendStatusHistory,getOrderHistory,replaceSheetStatusHistory,recordSyncLog,hasSyncedBefore,claimDigestDate,recordDigestResult,releaseDigestDate,recordManagerAction};
+module.exports={withTransaction,contentHash,upsertClient,getClient,setClientName,completeClientRegistration,findContact,replaceContacts,getAuthorizedClient,listContactsForWriteback,ROLES,createOrder,findOrder,updateOrder,upsertOrderMasterData,resolveClientBindings,updateOrderStatus,listOrdersForClient,listActiveOrdersWithClients,listAllOrdersForOverview,replacePayments,listPaymentsForOrder,STAGES,getStageInfo,appendStatusHistory,getOrderHistory,replaceSheetStatusHistory,recordSyncLog,hasSyncedBefore,claimDigestDate,recordDigestResult,releaseDigestDate,recordManagerAction};

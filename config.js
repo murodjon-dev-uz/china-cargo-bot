@@ -51,6 +51,11 @@ module.exports = {
     packagesCol: 'Мест',
     priceCol: 'Цена',
     currencyCol: 'Валюта',
+    // Payment ledger: one row per payment, several rows per order.
+    paymentsTab: 'Оплаты',
+    paymentDateCol: 'Дата',
+    paymentAmountCol: 'Сумма',
+    paymentNoteCol: 'Примечание',
     statusColPrefix: 'Status',
     dateColPrefix: 'Date',
   },

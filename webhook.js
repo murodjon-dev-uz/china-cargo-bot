@@ -62,6 +62,15 @@ const contactsSchema = z.object({
     row: z.number().int().positive().optional().nullable(),
   })).max(20000),
 });
+// Like the access lists, the ledger is always sent whole: a deleted payment
+// row leaves no trace in an onEdit payload, so a delta could never undo one.
+const paymentsSchema = z.object({ rows: z.array(z.object({
+  cargoId: z.string().trim().min(1).max(128),
+  date: z.string().max(64).optional().nullable(),
+  amount: z.union([z.string().max(32), z.number()]),
+  currency: z.string().max(16).optional().nullable(),
+  note: z.string().max(500).optional().nullable(),
+})).max(20000) });
 const orderSchema = z.object({ rows: z.array(z.object({
   cargoId: z.string().trim().min(1).max(128), client: z.string().max(256).optional().nullable(),
   phone: z.string().max(64).optional().nullable(),
@@ -182,6 +191,29 @@ app.post('/webhook/contacts-sync', async (req, res) => {
     return res.json({ ok: true, role, ...result });
   } catch (err) {
     logger.error('webhook: contacts-sync error', err.message);
+    return res.status(500).json({ error: 'internal error' });
+  }
+});
+
+// POST /webhook/payments-sync
+// The "Оплаты" sheet is a ledger: one row per payment, several per order.
+// What clients and managers see is the running total against the order's
+// price, so the whole tab is reconciled at once.
+app.post('/webhook/payments-sync', async (req, res) => {
+  const parsed = paymentsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
+  try {
+    const result = await queries.withTransaction((client) => queries.replacePayments(
+      parsed.data.rows.map((r) => ({
+        orderNumber: r.cargoId, paidOn: r.date || null, amount: r.amount,
+        currency: r.currency || null, note: r.note || null,
+      })),
+      client
+    ));
+    logger.info('webhook: payments synced', `${result.inserted} entries`);
+    return res.json({ ok: true, ...result });
+  } catch (err) {
+    logger.error('webhook: payments-sync error', err.message);
     return res.status(500).json({ error: 'internal error' });
   }
 });

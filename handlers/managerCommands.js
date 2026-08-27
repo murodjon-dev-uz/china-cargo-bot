@@ -1,9 +1,8 @@
 const queries = require('../db/queries');
 const logger = require('../lib/logger');
 const { isManager } = require('../lib/roles');
-const { escapeHtml, truncate, pluralOrders } = require('../lib/format');
+const { escapeHtml, truncate, pluralOrders, pluralClients, parseDecimal, formatMoney } = require('../lib/format');
 const { sortByRelevance, renderOrderCard } = require('../lib/orderCard');
-const { maskPhone } = require('../lib/phone');
 const {
   ALL_ORDERS_BUTTON,
   MY_ORDERS_BUTTON,
@@ -44,8 +43,31 @@ async function buildClientGroups() {
 
   return [...byClient.values()].map((g) => {
     const { active, delivered, ordered } = sortByRelevance(g.orders);
-    return { ...g, active, delivered, ordered, keyOrderNumber: ordered[0].order_number };
+    return { ...g, active, delivered, ordered, keyOrderNumber: ordered[0].order_number, ...moneyTotals(g.orders) };
   });
+}
+
+/**
+ * What is owed across a set of orders. Overpayments on one order must not
+ * cancel out a debt on another, so each order's remainder is floored at zero
+ * before being added up — otherwise a client with one prepaid shipment would
+ * look settled while still owing money on the next.
+ */
+function moneyTotals(orders) {
+  let billed = 0;
+  let paid = 0;
+  let due = 0;
+  let currency = null;
+  for (const o of orders) {
+    const price = parseDecimal(o.price) || 0;
+    const settled = parseDecimal(o.paid) || 0;
+    billed += price;
+    paid += settled;
+    due += Math.max(0, price - settled);
+    if (!currency && o.currency) currency = o.currency;
+  }
+  const round = (n) => Math.round(n * 100) / 100;
+  return { billed: round(billed), paid: round(paid), due: round(due), currency };
 }
 
 /** Re-derives a client's group from any single order number they own. */
@@ -61,10 +83,15 @@ async function findGroupByOrder(orderNumber) {
 
 function clientIdentityLines(group) {
   const name = group.name ? escapeHtml(group.name) : 'Без имени';
-  const phone = maskPhone(group.phone);
-  return group.telegramId != null
-    ? [`<b>👤 ${name}</b>`, `${phone} · ID <code>${group.telegramId}</code>`]
-    : [`<b>👤 ${name}</b>`, phone, '<i>ещё не зарегистрирован — уведомления не приходят</i>'];
+  // Full number, not masked: the manager is the person who has to ring it,
+  // and they already have the whole column open in the spreadsheet.
+  const phone = group.phone ? `<code>${escapeHtml(group.phone)}</code>` : 'телефон не указан';
+  const lines = group.telegramId != null
+    ? [`<b>👤 ${name}</b>`, phone]
+    : [`<b>👤 ${name}</b>`, phone, '<i>ещё не открыл бота — уведомления не приходят</i>'];
+  if (group.due > 0) lines.push(`💰 Долг: <b>${escapeHtml(formatMoney(group.due, group.currency))}</b>`);
+  else if (group.billed > 0) lines.push('💰 Оплачено полностью ✅');
+  return lines;
 }
 
 // --- level 1: clients ---
@@ -82,15 +109,28 @@ async function clientsOverview() {
   const totalDelivered = groups.reduce((n, g) => n + g.delivered.length, 0);
   const total = totalActive + totalDelivered;
 
-  const text = [
+  const money = moneyTotals(groups.flatMap((g) => g.ordered));
+  const debtors = groups.filter((g) => g.due > 0).length;
+
+  const lines = [
     `📋 <b>Все заявки</b> — ${total} ${pluralOrders(total)}`,
     '',
     `🚚 В пути — ${totalActive}`,
     `✅ Доставлено — ${totalDelivered}`,
     `👥 Клиентов — ${groups.length}`,
-    '',
-    'Выберите клиента, чтобы посмотреть его заявки.',
-  ].join('\n');
+  ];
+  if (money.billed > 0) {
+    lines.push(
+      '',
+      `💵 Выставлено — ${escapeHtml(formatMoney(money.billed, money.currency))}`,
+      `✅ Оплачено — ${escapeHtml(formatMoney(money.paid, money.currency))}`,
+      money.due > 0
+        ? `💰 Долг — <b>${escapeHtml(formatMoney(money.due, money.currency))}</b> · ${debtors} ${pluralClients(debtors)}`
+        : '💰 Долгов нет'
+    );
+  }
+  lines.push('', 'Выберите клиента, чтобы посмотреть его заявки.');
+  const text = lines.join('\n');
 
   return { text, extra: managerClientsList(groups) };
 }

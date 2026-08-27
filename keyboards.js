@@ -51,8 +51,10 @@ function backToOrdersList() {
 function managerClientsList(groups) {
   const rows = groups.map((g) => {
     const name = g.name || 'Без имени';
-    const unbound = g.telegramId == null ? ' ⚠️' : '';
-    const label = `👤 ${truncate(name, 20)} · 🚚 ${g.active.length} · ✅ ${g.delivered.length}${unbound}`;
+    // Two flags the manager acts on: 💰 someone still owes money, ⚠️ someone
+    // cannot be reached because they never opened the bot.
+    const flags = `${g.due > 0 ? ' 💰' : ''}${g.telegramId == null ? ' ⚠️' : ''}`;
+    const label = `👤 ${truncate(name, 18)} · 🚚 ${g.active.length} · ✅ ${g.delivered.length}${flags}`;
     return [Markup.button.callback(label, `mgr:g:${g.keyOrderNumber}`)];
   });
   return Markup.inlineKeyboard(rows);

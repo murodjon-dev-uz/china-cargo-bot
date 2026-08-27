@@ -97,6 +97,19 @@ async function main() {
     }
   });
 
+  const paymentRows = await sheets.readTab(config.sheets.paymentsTab);
+  const payments = await queries.withTransaction((client) => queries.replacePayments(
+    paymentRows.map((row) => ({
+      orderNumber: row[config.sheets.orderNumberCol] || null,
+      paidOn: row[config.sheets.paymentDateCol] || null,
+      amount: row[config.sheets.paymentAmountCol] || null,
+      currency: row[config.sheets.currencyCol] || null,
+      note: row[config.sheets.paymentNoteCol] || null,
+      sheetRow: row._row,
+    })),
+    client
+  ));
+
   await writeBackLoginStatus(config.sheets.contactsTab, 'client');
   await writeBackLoginStatus(config.sheets.managersTab, 'manager');
 
@@ -104,6 +117,7 @@ async function main() {
     clients: contacts.kept, clientsRevoked: contacts.removed,
     managers: managers.kept, managersRevoked: managers.removed,
     orders: orderRows.length, trackingRows: trackingRows.length, histories,
+    payments: payments.inserted,
   }));
 }
 

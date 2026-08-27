@@ -1,6 +1,17 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseDecimal, formatNumberRu, formatMoney, formatDateRu, pluralPackages } = require('../lib/format');
+const format = require('../lib/format');
+const { parseDecimal, formatDateRu, pluralPackages } = format;
+
+// Thousands are grouped with a non-breaking space so a figure never wraps in
+// half inside Telegram. Normalise it by character code — writing the
+// character itself here would leave an invisible difference in the source.
+const NBSP = String.fromCharCode(160);
+const plain = (text) => text.split(NBSP).join(' ');
+const formatNumberRu = (...args) => plain(format.formatNumberRu(...args));
+const formatMoney = (...args) => plain(format.formatMoney(...args));
+
+// expectations stay readable.
 
 test('reads numbers as managers actually type them', () => {
   assert.equal(parseDecimal('1 250,5'), 1250.5);
@@ -20,8 +31,8 @@ test('rejects cells with no number in them', () => {
 test('drops trailing zeros and groups thousands', () => {
   assert.equal(formatNumberRu(12.5), '12,5');
   assert.equal(formatNumberRu(12), '12');
-  assert.equal(formatNumberRu(1250.5), '1 250,5');
-  assert.equal(formatMoney(3750, 'USD'), '3 750 USD');
+  assert.equal(formatNumberRu(1250.5), '1 250,5');
+  assert.equal(formatMoney(3750, 'USD'), '3 750 USD');
   assert.equal(formatMoney(null, 'USD'), '');
 });
 

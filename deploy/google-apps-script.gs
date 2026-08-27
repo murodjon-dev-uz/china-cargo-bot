@@ -33,6 +33,7 @@ const CONTACT_NAME_HEADER = 'Имя клиента';
 const CONTACT_PHONE_HEADER = 'Номер телефона';
 const CONTACT_HEADERS = [CONTACT_NAME_HEADER, CONTACT_PHONE_HEADER, 'Статус', 'Дата входа'];
 const CARGO_ID_COL = 1; // Column A on both sheets
+const CARGO_ID_HEADER = 'Cargo ID';
 const STATUS_PREFIX = 'Status';
 const DATE_PREFIX = 'Date';
 
@@ -47,6 +48,10 @@ const STAGE_VALUES = ['🏭 На заводе', '🚚 В пути', '✅ Дос�
 // anything typed by hand is accepted AND appended to the list, so the second
 // person to need a wording finds it already there. The list lives on its own
 // sheet because data validation cannot store one that changes.
+// Payment ledger: one row per payment, several rows per Cargo ID.
+const PAYMENTS_SHEET_NAME = 'Оплаты';
+const PAYMENT_HEADERS = ['Cargo ID', 'Дата', 'Сумма', 'Валюта', 'Примечание'];
+
 const STATUS_LIST_SHEET_NAME = 'Статусы';
 const DEFAULT_STATUSES = [
   'Принят на складе в Китае',
@@ -83,6 +88,7 @@ function onOpen() {
     .addItem('Setup "Менеджеры" sheet', 'setupManagersSheet')
     .addItem('Sync contacts now', 'syncContacts')
     .addItem('Setup status dropdown', 'setupStatusDropdown')
+    .addItem('Setup "Оплаты" sheet', 'setupPaymentsSheet')
     .addToUi();
 }
 
@@ -169,6 +175,49 @@ function syncContacts() {
   const clients = pushContacts(CONTACTS_SHEET_NAME, 'client');
   const managers = pushContacts(MANAGERS_SHEET_NAME, 'manager');
   SpreadsheetApp.getUi().alert('Клиентов: ' + clients + ', менеджеров: ' + managers + ' ✅');
+}
+
+// ============ PAYMENTS ============
+
+function setupPaymentsSheet() {
+  const spreadsheet = SpreadsheetApp.getActive();
+  let sheet = spreadsheet.getSheetByName(PAYMENTS_SHEET_NAME);
+  if (!sheet) sheet = spreadsheet.insertSheet(PAYMENTS_SHEET_NAME);
+  const existing = sheet.getRange(1, 1, 1, PAYMENT_HEADERS.length).getValues()[0];
+  const empty = existing.every(function (h) { return !h; });
+  if (empty) {
+    sheet.getRange(1, 1, 1, PAYMENT_HEADERS.length).setValues([PAYMENT_HEADERS]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+  }
+  SpreadsheetApp.getUi().alert('Лист "' + PAYMENTS_SHEET_NAME + '" готов. Одна строка — одна оплата. ✅');
+}
+
+/** Sends the WHOLE ledger: a deleted row could not be undone by a delta. */
+function pushPayments() {
+  const sheet = SpreadsheetApp.getActive().getSheetByName(PAYMENTS_SHEET_NAME);
+  if (!sheet) return 0;
+  const data = sheet.getDataRange().getValues();
+  if (data.length < 2) {
+    sendWebhook('/webhook/payments-sync', { rows: [] });
+    return 0;
+  }
+  const headers = data[0];
+  const rows = [];
+  for (let row = 2; row <= data.length; row++) {
+    const rowData = data[row - 1];
+    const cargoId = getCell(headers, rowData, CARGO_ID_HEADER);
+    const amount = getCell(headers, rowData, 'Сумма');
+    if (!cargoId || !amount) continue;
+    rows.push({
+      cargoId: cargoId,
+      date: formatDate(getCellRaw(headers, rowData, 'Дата')),
+      amount: amount,
+      currency: getCell(headers, rowData, 'Валюта'),
+      note: getCell(headers, rowData, 'Примечание')
+    });
+  }
+  sendWebhook('/webhook/payments-sync', { rows: rows });
+  return rows.length;
 }
 
 // ============ STATUS DROPDOWN ============
@@ -295,6 +344,11 @@ function onEdit(e) {
 
   if (sheetName === MANAGERS_SHEET_NAME) {
     pushContacts(MANAGERS_SHEET_NAME, 'manager');
+    return;
+  }
+
+  if (sheetName === PAYMENTS_SHEET_NAME) {
+    pushPayments();
     return;
   }
 

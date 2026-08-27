@@ -109,3 +109,20 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS volume_m3 NUMERIC(12,3);
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS packages INTEGER;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS price NUMERIC(14,2);
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS currency TEXT;
+
+-- Payment ledger mirrored from the "Оплаты" sheet: a client pays in parts, so
+-- what matters is the running total against the order's price, not a single
+-- "paid" flag. No foreign key on purpose — a payment can be entered before
+-- the order row exists, and losing it to a cascade would be worse than an
+-- orphan row that resolves itself on the next sync.
+CREATE TABLE IF NOT EXISTS payments (
+  id BIGSERIAL PRIMARY KEY,
+  order_number TEXT NOT NULL,
+  paid_on DATE,
+  amount NUMERIC(14,2) NOT NULL,
+  currency TEXT,
+  note TEXT,
+  sheet_row INTEGER,
+  synced_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_payments_order ON payments(order_number);

@@ -31,6 +31,14 @@ docker compose logs -f bot
 
 `Заявки` carries the particulars clients ask about: `Откуда`, `Куда`, `Вес (кг)`, `Объём (м³)`, `Мест`, `Цена`, `Валюта`. Numbers are read as typed — `1 250,5`, `1,250.50` and `12 кг` all parse — and rendered back grouped, with trailing zeros dropped. `Route` stays as a legacy free-text field, shown only when `Откуда`/`Куда` are empty.
 
+## Payments
+
+`Оплаты` is a ledger: one row per payment, several rows per `Cargo ID` — columns `Cargo ID`, `Дата`, `Сумма`, `Валюта`, `Примечание`. Clients and managers see the running total against the order's price: paid, and what is left. Every order read carries its payment total, so the card, the client list and the overview totals can never disagree.
+
+Overpayment on one order never cancels a debt on another: each order's remainder is floored at zero before the totals are added up.
+
+Create the tab with **China Cargo → Setup "Оплаты" sheet**.
+
 ## Status dropdown
 
 Every `Status N` column on `Трекинг` offers a dropdown backed by the hidden `Статусы` sheet, seeded with the twenty most common wordings. The list is a shortcut, never a restriction: anything typed by hand is accepted **and appended to the list**, so the next person finds it already there. Set it up with **China Cargo → Setup status dropdown**.
