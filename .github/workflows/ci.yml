@@ -10,6 +10,31 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+
+    # The authorization tests exercise real SQL, so CI needs a real database.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: china_cargo
+          POSTGRES_USER: china_cargo
+          POSTGRES_PASSWORD: ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U china_cargo -d china_cargo"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+
+    # config.js refuses to load without these. They are placeholders: nothing
+    # in the test suite talks to Telegram or Google.
+    env:
+      DATABASE_URL: postgresql://china_cargo:ci@127.0.0.1:5432/china_cargo
+      BOT_TOKEN: ci-placeholder
+      MANAGER_GROUP_CHAT_ID: '-1'
+      MANAGER_TELEGRAM_IDS: '1'
+      SPREADSHEET_ID: ci-placeholder
+      GOOGLE_SERVICE_ACCOUNT_KEY_PATH: ./service-account.json
+      WEBHOOK_SECRET: ci-placeholder
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

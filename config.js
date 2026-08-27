@@ -41,6 +41,14 @@ module.exports = {
   sheets: {
     ordersTab: 'Заявки',
     trackingTab: 'Трекинг',
+    // Access list. Managers fill "Имя клиента" and "Номер телефона" by hand;
+    // only a phone present here can log into the bot. The last two columns
+    // are written back by the sync layer, never by the bot itself.
+    contactsTab: 'Контакты',
+    contactNameCol: 'Имя клиента',
+    contactPhoneCol: 'Номер телефона',
+    contactStatusCol: 'Статус',
+    contactJoinedCol: 'Дата входа',
     orderNumberCol: 'Cargo ID',
     clientCol: 'Client',
     phoneCol: 'Телефон',

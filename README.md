@@ -36,9 +36,26 @@ Copy `deploy/google-apps-script.gs` into the spreadsheet's Apps Script project. 
 
 Run `onOpen`, return to the sheet and choose **China Cargo → Enable auto-sync**.
 
-## Client registration
+## Access list and client login
 
-Clients register with `/start`, enter their name and share their own Telegram Contact. The bot verifies that the contact belongs to the sender and links orders exclusively by the normalized value in the `Телефон` column. Telegram usernames are neither stored nor used. One phone number can belong to only one Telegram account; conflicts are sent to the manager group for manual review.
+The bot is closed. A phone number must already be listed on the **`Контакты`** tab before its owner can use the bot at all.
+
+| Column | Filled by |
+| --- | --- |
+| `Имя клиента` | manager, by hand |
+| `Номер телефона` | manager, by hand |
+| `Статус` | the sync layer (`Вошёл` once the client logs in) |
+| `Дата входа` | the sync layer |
+
+`/start` asks for the phone immediately — there is no name step, the name comes from the sheet. The client taps the button and Telegram sends the number of the account itself; a forwarded contact card is rejected, because only the sender's own contact carries a `user_id` equal to theirs.
+
+If the number is on the list, the client is in. If it is not, the bot refuses and nothing else in the bot is reachable. Delete a row and access is revoked on that client's next message: authorization is a live JOIN against the mirrored list, not a flag stored at registration time.
+
+Orders are linked to clients exclusively by the normalized value in the `Телефон` column of `Заявки`. Telegram usernames are neither stored nor used. One phone number can belong to only one Telegram account; conflicts are sent to the manager group for manual review.
+
+The bot process itself never calls Google. The access list reaches it only through Postgres — filled by the Apps Script webhook on every edit, or by `npm run sync`.
+
+To set the tab up, use **China Cargo → Setup "Контакты" sheet** in the spreadsheet menu.
 
 ## Operations
 

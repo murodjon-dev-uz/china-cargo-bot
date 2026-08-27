@@ -73,3 +73,20 @@ CREATE TABLE IF NOT EXISTS manager_actions_log (
   comment TEXT,
   created_at TIMESTAMPTZ NOT NULL
 );
+
+-- Access list mirrored from the "Контакты" sheet. A phone must be present
+-- here for its owner to use the bot at all: registration checks it, and so
+-- does every later interaction, so deleting a row in the sheet revokes
+-- access on the client's next message. The sheet is reconciled wholesale on
+-- every sync, which is what makes deletions detectable.
+CREATE TABLE IF NOT EXISTS contacts (
+  phone TEXT PRIMARY KEY,
+  full_name TEXT,
+  sheet_row INTEGER,
+  synced_at TIMESTAMPTZ NOT NULL
+);
+
+-- The name step is gone: /start now asks for the phone straight away, and
+-- the client's name comes from the "Контакты" sheet instead of being typed.
+ALTER TABLE clients ALTER COLUMN registration_state SET DEFAULT 'AWAITING_PHONE';
+UPDATE clients SET registration_state = 'AWAITING_PHONE' WHERE registration_state = 'AWAITING_NAME';

@@ -1,0 +1,26 @@
+# Development-only database. Run it explicitly:
+#   docker compose -f compose.dev.yaml up -d
+# It uses its own project name, volume and a published host port, so it never
+# touches the production stack in compose.yaml.
+name: china-cargo-dev
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-china_cargo}
+      POSTGRES_USER: ${POSTGRES_USER:-china_cargo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      TZ: ${TZ:-Asia/Tashkent}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  postgres_dev_data:

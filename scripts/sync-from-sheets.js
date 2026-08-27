@@ -4,6 +4,11 @@ const queries = require('../db/queries');
 const database = require('../db/db');
 const { migrate } = require('../db/migrate');
 
+// Column letters on the "Контакты" tab: A "Имя клиента", B "Номер телефона"
+// are the manager's, C and D are the two the sync layer fills in.
+const CONTACT_STATUS_COLUMN = 'C';
+const CONTACT_JOINED_COLUMN = 'D';
+
 function statusesFromRow(row) {
   const statuses = [];
   for (let index = 1; index <= 100; index++) {
@@ -15,8 +20,39 @@ function statusesFromRow(row) {
   return statuses;
 }
 
+/**
+ * Pushes "вошёл / не вошёл" and the login date back into the access-list tab,
+ * so the manager can see at a glance who still needs the bot's link. This
+ * lives in the sync layer on purpose: the bot process itself never talks to
+ * Google, it only ever reads the mirrored table in Postgres.
+ */
+async function writeBackLoginStatus() {
+  const rows = await queries.listContactsForWriteback();
+  for (const row of rows) {
+    const joined = row.registration_completed_at
+      ? new Date(row.registration_completed_at).toISOString().slice(0, 10)
+      : '';
+    await sheets.writeCell(config.sheets.contactsTab, row.sheet_row, CONTACT_STATUS_COLUMN, row.telegram_id ? 'Вошёл' : '');
+    await sheets.writeCell(config.sheets.contactsTab, row.sheet_row, CONTACT_JOINED_COLUMN, joined);
+  }
+  return rows.length;
+}
+
 async function main() {
   await migrate();
+
+  // The access list goes first: an order row is useless to a client who
+  // cannot log in, and a number added in this run should work immediately.
+  const contactRows = await sheets.readTab(config.sheets.contactsTab);
+  const contacts = await queries.withTransaction((client) => queries.replaceContacts(
+    contactRows.map((row) => ({
+      fullName: row[config.sheets.contactNameCol] || null,
+      phone: row[config.sheets.contactPhoneCol] || null,
+      sheetRow: row._row,
+    })),
+    client
+  ));
+
   const orderRows = await sheets.readTab(config.sheets.ordersTab);
   const trackingRows = await sheets.readTab(config.sheets.trackingTab);
 
@@ -47,7 +83,12 @@ async function main() {
     }
   });
 
-  console.log(JSON.stringify({ orders: orderRows.length, trackingRows: trackingRows.length, histories }));
+  const writtenBack = await writeBackLoginStatus();
+
+  console.log(JSON.stringify({
+    contacts: contacts.kept, revoked: contacts.removed, writtenBack,
+    orders: orderRows.length, trackingRows: trackingRows.length, histories,
+  }));
 }
 
 main()

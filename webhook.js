@@ -51,6 +51,14 @@ const trackingSchema = z.object({ rows: z.array(z.object({
   cargoId: z.string().trim().min(1).max(128),
   statuses: z.array(z.object({ text: z.string().trim().min(1).max(2000), date: z.string().max(64).optional().nullable() })).max(100),
 })).min(1).max(100) });
+// The access list is always sent whole, never as a delta: a row deleted in
+// the sheet leaves no trace in an onEdit payload, so the only way to notice a
+// revoked number is to compare the complete list against ours.
+const contactsSchema = z.object({ rows: z.array(z.object({
+  name: z.string().max(256).optional().nullable(),
+  phone: z.string().max(64),
+  row: z.number().int().positive().optional().nullable(),
+})).max(20000) });
 const orderSchema = z.object({ rows: z.array(z.object({
   cargoId: z.string().trim().min(1).max(128), client: z.string().max(256).optional().nullable(),
   phone: z.string().max(64).optional().nullable(),
@@ -136,6 +144,27 @@ app.post('/webhook/order-sync', async (req, res) => {
   }
 
   return res.json({ ok: true, results });
+});
+
+// POST /webhook/contacts-sync
+// The "Контакты" sheet is the access list: a phone must be on it for its
+// owner to use the bot at all. Apps Script sends the ENTIRE tab on any edit,
+// and we reconcile wholesale — numbers missing from the payload are deleted,
+// which is what revokes access on the client's next message.
+app.post('/webhook/contacts-sync', async (req, res) => {
+  const parsed = contactsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
+  try {
+    const result = await queries.withTransaction((client) => queries.replaceContacts(
+      parsed.data.rows.map((r) => ({ fullName: r.name || null, phone: r.phone, sheetRow: r.row || null })),
+      client
+    ));
+    logger.info('webhook: contacts synced', `${result.kept} allowed`, `${result.removed} revoked`);
+    return res.json({ ok: true, ...result });
+  } catch (err) {
+    logger.error('webhook: contacts-sync error', err.message);
+    return res.status(500).json({ error: 'internal error' });
+  }
 });
 
 // Health check

@@ -2,7 +2,10 @@ const { Telegraf } = require('telegraf');
 const config = require('./config');
 const logger = require('./lib/logger');
 const database = require('./db/db');
+const queries = require('./db/queries');
 const { migrate } = require('./db/migrate');
+
+const { requireAuthorized } = require('./lib/auth');
 
 const { registerStart } = require('./handlers/start');
 const { registerMyOrders } = require('./handlers/myOrders');
@@ -15,11 +18,27 @@ const bot = new Telegraf(config.botToken);
 let webhookServer;
 let shuttingDown = false;
 
-// Registration order matters: button-text handlers must come before the
-// generic manager text-catcher in managerCommands.js, so a manager tapping
-// "Мои заявки"/"Связь с менеджером" is handled by those, not swallowed as a
-// pending status-comment reply.
+// Registration order is the authorization boundary, not a style choice.
+//
+// 1. Every update touches the client row first, so last_seen_at stays honest
+//    even for someone who never gets past the gate.
+// 2. registerStart runs BEFORE the gate: /start and the shared contact are
+//    the only two things an unauthorized person may do — they are the way in.
+// 3. requireAuthorized closes everything after it. Beyond this line a
+//    non-manager is guaranteed to be on the "Контакты" access list.
+// 4. Button-text handlers must come before the generic manager text-catcher
+//    in managerCommands.js, so a manager tapping "Мои заявки"/"Связь с
+//    менеджером" is handled by those, not swallowed as a pending
+//    status-comment reply.
+bot.use(async (ctx, next) => {
+  if (ctx.from) await queries.upsertClient({ telegramId: ctx.from.id, firstName: ctx.from.first_name });
+  return next();
+});
+
 registerStart(bot);
+
+bot.use(requireAuthorized());
+
 registerMyOrders(bot);
 registerContactManager(bot);
 registerManagerCommands(bot);

@@ -23,9 +23,64 @@ async function getClient(telegramId, client) {
 async function setClientName(telegramId, fullName, client) {
   await runner(client).query("UPDATE clients SET full_name=$1,registration_state='AWAITING_PHONE',last_seen_at=$2 WHERE telegram_id=$3", [fullName, nowIso(), telegramId]);
 }
+async function findContact(phone, client) {
+  const normalized = normalizePhone(phone);
+  if (!normalized) return null;
+  return (await runner(client).query('SELECT * FROM contacts WHERE phone=$1', [normalized])).rows[0] || null;
+}
+
+/**
+ * Reconciles the whole access list against the "Контакты" sheet: numbers the
+ * sheet no longer lists are deleted, which is how access gets revoked. Callers
+ * MUST pass every row of the tab, not just the edited ones — a partial list
+ * would silently revoke everyone missing from it.
+ */
+async function replaceContacts(rows, client) {
+  const db = runner(client);
+  const now = nowIso();
+  const seen = [];
+  for (const row of rows) {
+    const phone = normalizePhone(row.phone);
+    if (!phone || seen.includes(phone)) continue;
+    seen.push(phone);
+    await db.query(`INSERT INTO contacts(phone,full_name,sheet_row,synced_at) VALUES($1,$2,$3,$4)
+      ON CONFLICT(phone) DO UPDATE SET full_name=EXCLUDED.full_name,sheet_row=EXCLUDED.sheet_row,synced_at=EXCLUDED.synced_at`,
+    [phone, row.fullName || null, row.sheetRow || null, now]);
+  }
+  const removed = (await db.query('DELETE FROM contacts WHERE NOT (phone = ANY($1::text[]))', [seen])).rowCount;
+  return { kept: seen.length, removed };
+}
+
+/**
+ * The single authorization question the bot asks. A client is authorized only
+ * while their confirmed phone is still on the access list, so the JOIN — not a
+ * stored flag — is what makes a deleted sheet row take effect immediately.
+ */
+async function getAuthorizedClient(telegramId, client) {
+  return (await runner(client).query(
+    `SELECT c.*, ct.full_name AS contact_name FROM clients c
+     JOIN contacts ct ON ct.phone = c.phone
+     WHERE c.telegram_id=$1 AND c.registration_state='REGISTERED'`, [telegramId])).rows[0] || null;
+}
+
+async function listContactsForWriteback(client) {
+  return (await runner(client).query(
+    `SELECT ct.phone, ct.sheet_row, c.telegram_id, c.registration_completed_at
+     FROM contacts ct LEFT JOIN clients c
+       ON c.phone = ct.phone AND c.registration_state='REGISTERED'
+     WHERE ct.sheet_row IS NOT NULL`)).rows;
+}
+
 async function completeClientRegistration(telegramId, phone, client) {
   const normalized = normalizePhone(phone);
   if (!normalized) throw new Error('Invalid phone number');
+  const contact = await findContact(normalized, client);
+  if (!contact) {
+    const error = new Error('Phone number is not on the access list');
+    error.code = 'NOT_ALLOWED';
+    error.phone = normalized;
+    throw error;
+  }
   const owner = (await runner(client).query('SELECT telegram_id FROM clients WHERE phone=$1 AND telegram_id<>$2 LIMIT 1', [normalized, telegramId])).rows[0];
   if (owner) {
     const error = new Error('Phone number is already registered');
@@ -34,8 +89,9 @@ async function completeClientRegistration(telegramId, phone, client) {
     error.phone = normalized;
     throw error;
   }
-  await runner(client).query(`UPDATE clients SET phone=$1,registration_state='REGISTERED',registration_completed_at=$2,last_seen_at=$2 WHERE telegram_id=$3`, [normalized, nowIso(), telegramId]);
-  return normalized;
+  await runner(client).query(`UPDATE clients SET phone=$1,full_name=COALESCE($2,full_name),registration_state='REGISTERED',registration_completed_at=$3,last_seen_at=$3 WHERE telegram_id=$4`,
+    [normalized, contact.full_name || null, nowIso(), telegramId]);
+  return { phone: normalized, contact };
 }
 async function createOrder(data, client) {
   const now = nowIso();
@@ -80,4 +136,4 @@ async function recordDigestResult(date,clients,delivered){await pool.query('UPDA
 async function releaseDigestDate(date){await pool.query('DELETE FROM digest_log WHERE digest_date=$1',[date]);}
 async function recordManagerAction(data,client){await runner(client).query('INSERT INTO manager_actions_log(manager_telegram_id,order_number,new_status_text,comment,created_at) VALUES($1,$2,$3,$4,$5)',[data.managerTelegramId,data.orderNumber,data.statusText||null,data.comment||null,nowIso()]);}
 
-module.exports={withTransaction,contentHash,upsertClient,getClient,setClientName,completeClientRegistration,createOrder,findOrder,updateOrder,upsertOrderMasterData,resolveClientBindings,updateOrderStatus,listOrdersForClient,listActiveOrdersWithClients,listAllOrdersForOverview,STAGES,getStageInfo,appendStatusHistory,getOrderHistory,replaceSheetStatusHistory,recordSyncLog,hasSyncedBefore,claimDigestDate,recordDigestResult,releaseDigestDate,recordManagerAction};
+module.exports={withTransaction,contentHash,upsertClient,getClient,setClientName,completeClientRegistration,findContact,replaceContacts,getAuthorizedClient,listContactsForWriteback,createOrder,findOrder,updateOrder,upsertOrderMasterData,resolveClientBindings,updateOrderStatus,listOrdersForClient,listActiveOrdersWithClients,listAllOrdersForOverview,STAGES,getStageInfo,appendStatusHistory,getOrderHistory,replaceSheetStatusHistory,recordSyncLog,hasSyncedBefore,claimDigestDate,recordDigestResult,releaseDigestDate,recordManagerAction};

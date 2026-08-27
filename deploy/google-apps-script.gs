@@ -24,6 +24,11 @@ const WEBHOOK_SECRET = PropertiesService.getScriptProperties().getProperty('WEBH
 
 const TRACKING_SHEET_NAME = 'Трекинг';
 const ORDERS_SHEET_NAME = 'Заявки';
+// Access list: a phone must be on this tab for its owner to use the bot.
+const CONTACTS_SHEET_NAME = 'Контакты';
+const CONTACT_NAME_HEADER = 'Имя клиента';
+const CONTACT_PHONE_HEADER = 'Номер телефона';
+const CONTACT_HEADERS = [CONTACT_NAME_HEADER, CONTACT_PHONE_HEADER, 'Статус', 'Дата входа'];
 const CARGO_ID_COL = 1; // Column A on both sheets
 const STATUS_PREFIX = 'Status';
 const DATE_PREFIX = 'Date';
@@ -43,6 +48,8 @@ function onOpen() {
     .addItem('Enable auto-sync', 'enableAutoSync')
     .addItem('Disable auto-sync', 'disableAutoSync')
     .addItem('Setup "Этап" column', 'setupStageColumn')
+    .addItem('Setup "Контакты" sheet', 'setupContactsSheet')
+    .addItem('Sync contacts now', 'syncContacts')
     .addToUi();
 }
 
@@ -76,6 +83,52 @@ function setupStageColumn() {
   SpreadsheetApp.getUi().alert(`Готово! Колонка "${STAGE_COL_NAME}" настроена с выпадающим списком. ✅`);
 }
 
+// One-time (idempotent) setup: creates the access-list tab with its four
+// headers if it is missing. Existing rows are never touched.
+function setupContactsSheet() {
+  const spreadsheet = SpreadsheetApp.getActive();
+  let sheet = spreadsheet.getSheetByName(CONTACTS_SHEET_NAME);
+  if (!sheet) {
+    sheet = spreadsheet.insertSheet(CONTACTS_SHEET_NAME);
+  }
+  const width = CONTACT_HEADERS.length;
+  const existing = sheet.getRange(1, 1, 1, width).getValues()[0];
+  const empty = existing.every(function (h) { return !h; });
+  if (empty) {
+    sheet.getRange(1, 1, 1, width).setValues([CONTACT_HEADERS]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+    sheet.getRange(2, 2, sheet.getMaxRows() - 1, 1).setNumberFormat('@'); // keep +998... as text
+  }
+  SpreadsheetApp.getUi().alert('Лист "' + CONTACTS_SHEET_NAME + '" готов. Заполняйте "' + CONTACT_NAME_HEADER + '" и "' + CONTACT_PHONE_HEADER + '". ✅');
+}
+
+// Sends the WHOLE access list. Never send a subset: the bot reconciles against
+// this payload, so a number missing from it is treated as revoked.
+function pushContacts() {
+  const sheet = SpreadsheetApp.getActive().getSheetByName(CONTACTS_SHEET_NAME);
+  if (!sheet) return 0;
+  const data = sheet.getDataRange().getValues();
+  if (data.length < 2) {
+    sendWebhook('/webhook/contacts-sync', { rows: [] });
+    return 0;
+  }
+  const headers = data[0];
+  const rows = [];
+  for (let row = 2; row <= data.length; row++) {
+    const rowData = data[row - 1];
+    const phone = getCell(headers, rowData, CONTACT_PHONE_HEADER);
+    if (!phone) continue;
+    rows.push({ name: getCell(headers, rowData, CONTACT_NAME_HEADER), phone: phone, row: row });
+  }
+  sendWebhook('/webhook/contacts-sync', { rows: rows });
+  return rows.length;
+}
+
+function syncContacts() {
+  const count = pushContacts();
+  SpreadsheetApp.getUi().alert('Отправлено номеров: ' + count + ' ✅');
+}
+
 function enableAutoSync() {
   const triggers = ScriptApp.getProjectTriggers();
   for (const trigger of triggers) {
@@ -105,6 +158,11 @@ function disableAutoSync() {
 function onEdit(e) {
   const sheet = e.source.getActiveSheet();
   const sheetName = sheet.getName();
+
+  if (sheetName === CONTACTS_SHEET_NAME) {
+    pushContacts();
+    return;
+  }
 
   if (sheetName !== TRACKING_SHEET_NAME && sheetName !== ORDERS_SHEET_NAME) {
     return;
@@ -201,7 +259,7 @@ function sendWebhook(path, data) {
     };
     const response = UrlFetchApp.fetch(WEBHOOK_BASE_URL + path, options);
     if (response.getResponseCode() === 200) {
-      Logger.log(`✅ ${path}: ${data.rows.length} row(s) synced`);
+      Logger.log(`✅ ${path}: ${(data.rows || []).length} row(s) synced`);
     } else {
       Logger.log(`❌ ${path} failed (${response.getResponseCode()}): ${response.getContentText()}`);
     }
