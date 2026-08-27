@@ -39,6 +39,8 @@ Overpayment on one order never cancels a debt on another: each order's remainder
 
 Create the tab with **China Cargo → Setup "Оплаты" sheet**.
 
+**Currently hidden.** `PAYMENTS_ENABLED` defaults to `false`, so neither the client card nor the manager's totals mention payments — only the price is shown. The ledger keeps syncing regardless, so switching it to `true` and restarting brings the figures back with no data lost.
+
 ## Status dropdown
 
 Every `Status N` column on `Трекинг` offers a dropdown backed by the hidden `Статусы` sheet, seeded with the twenty most common wordings. The list is a shortcut, never a restriction: anything typed by hand is accepted **and appended to the list**, so the next person finds it already there. Set it up with **China Cargo → Setup status dropdown**.

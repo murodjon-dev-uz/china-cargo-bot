@@ -21,6 +21,11 @@ module.exports = {
   webhookSecret: required('WEBHOOK_SECRET'),
   databaseUrl: required('DATABASE_URL'),
   databaseSsl: process.env.DATABASE_SSL === 'true',
+  // Payments are built and kept in sync, but hidden from both the client card
+  // and the manager's money totals until this is switched on. Hiding rather
+  // than removing means turning it back on costs one variable, and the ledger
+  // keeps filling up in the meantime.
+  paymentsEnabled: process.env.PAYMENTS_ENABLED === 'true',
   port: Number(process.env.PORT || 3000),
   logLevel: process.env.LOG_LEVEL || 'info',
   timezone: process.env.TZ || 'Asia/Tashkent',

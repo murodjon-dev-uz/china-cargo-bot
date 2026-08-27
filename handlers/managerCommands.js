@@ -1,4 +1,5 @@
 const queries = require('../db/queries');
+const config = require('../config');
 const logger = require('../lib/logger');
 const { isManager } = require('../lib/roles');
 const { escapeHtml, truncate, pluralOrders, pluralClients, parseDecimal, formatMoney } = require('../lib/format');
@@ -54,6 +55,10 @@ async function buildClientGroups() {
  * look settled while still owing money on the next.
  */
 function moneyTotals(orders) {
+  // One switch for every money surface: with payments hidden the totals come
+  // back zeroed, which drops the overview block, the per-client debt line and
+  // the 💰 flag on the buttons without a condition at each of them.
+  if (!config.paymentsEnabled) return { billed: 0, paid: 0, due: 0, currency: null };
   let billed = 0;
   let paid = 0;
   let due = 0;
