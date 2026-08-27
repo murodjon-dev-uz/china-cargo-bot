@@ -67,6 +67,12 @@ const orderSchema = z.object({ rows: z.array(z.object({
   phone: z.string().max(64).optional().nullable(),
   cargo: z.string().max(2000).optional().nullable(), route: z.string().max(1000).optional().nullable(),
   eta: z.string().max(64).optional().nullable(), stage: z.string().max(64).optional().nullable(),
+  origin: z.string().max(256).optional().nullable(), destination: z.string().max(256).optional().nullable(),
+  weightKg: z.union([z.string().max(32), z.number()]).optional().nullable(),
+  volumeM3: z.union([z.string().max(32), z.number()]).optional().nullable(),
+  packages: z.union([z.string().max(32), z.number()]).optional().nullable(),
+  price: z.union([z.string().max(32), z.number()]).optional().nullable(),
+  currency: z.string().max(16).optional().nullable(),
 })).min(1).max(100) });
 
 // POST /webhook/tracking-sync
@@ -137,6 +143,13 @@ app.post('/webhook/order-sync', async (req, res) => {
         clientName: row.client || null,
         boundPhone: row.phone || null,
         stage: row.stage || null,
+        origin: row.origin || null,
+        destination: row.destination || null,
+        weightKg: row.weightKg ?? null,
+        volumeM3: row.volumeM3 ?? null,
+        packages: row.packages ?? null,
+        price: row.price ?? null,
+        currency: row.currency || null,
       }, client));
       logger.info('webhook: order synced', cargoId, outcome.created ? 'created' : 'updated');
       results.push({ cargoId, ok: true, created: outcome.created });

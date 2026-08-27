@@ -27,6 +27,14 @@ docker compose ps
 docker compose logs -f bot
 ```
 
+## Shipment fields
+
+`Заявки` carries the particulars clients ask about: `Откуда`, `Куда`, `Вес (кг)`, `Объём (м³)`, `Мест`, `Цена`, `Валюта`. Numbers are read as typed — `1 250,5`, `1,250.50` and `12 кг` all parse — and rendered back grouped, with trailing zeros dropped. `Route` stays as a legacy free-text field, shown only when `Откуда`/`Куда` are empty.
+
+## Status dropdown
+
+Every `Status N` column on `Трекинг` offers a dropdown backed by the hidden `Статусы` sheet, seeded with the twenty most common wordings. The list is a shortcut, never a restriction: anything typed by hand is accepted **and appended to the list**, so the next person finds it already there. Set it up with **China Cargo → Setup status dropdown**.
+
 ## Google Apps Script
 
 Copy `deploy/google-apps-script.gs` into the spreadsheet's Apps Script project. In **Project Settings → Script properties**, set:

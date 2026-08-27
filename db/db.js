@@ -1,5 +1,12 @@
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
 const config = require('../config');
+
+// A DATE column has no time and no zone, but node-postgres turns it into a JS
+// Date at LOCAL midnight. Every formatter here reads UTC components, so in
+// Asia/Tashkent (UTC+5) an ETA of 2026-09-04 rendered as "3 сентября" — a day
+// early, in the one number clients care about most. Hand DATE back as the
+// plain "YYYY-MM-DD" string the database actually stores.
+types.setTypeParser(types.builtins.DATE, (value) => value);
 
 const pool = new Pool({
   connectionString: config.databaseUrl,

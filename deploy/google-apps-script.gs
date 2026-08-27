@@ -43,6 +43,34 @@ const DATE_PREFIX = 'Date';
 const STAGE_COL_NAME = 'Этап';
 const STAGE_VALUES = ['🏭 На заводе', '🚚 В пути', '✅ Доставлен'];
 
+// Status text is picked from a dropdown that the managers grow themselves:
+// anything typed by hand is accepted AND appended to the list, so the second
+// person to need a wording finds it already there. The list lives on its own
+// sheet because data validation cannot store one that changes.
+const STATUS_LIST_SHEET_NAME = 'Статусы';
+const DEFAULT_STATUSES = [
+  'Принят на складе в Китае',
+  'Упакован',
+  'Проверен и промаркирован',
+  'Ожидает отправки',
+  'Загружен в машину',
+  'Отправлен со склада Гуанчжоу',
+  'Отправлен со склада Урумчи',
+  'В пути',
+  'Прибыл на границу',
+  'Проходит таможню в Китае',
+  'Пересёк границу',
+  'Проходит таможенное оформление',
+  'Таможня пройдена',
+  'В пути по Казахстану',
+  'Прибыл в Ташкент',
+  'На складе в Ташкенте',
+  'Готов к выдаче',
+  'Передан курьеру',
+  'Доставлен получателю',
+  'Задержка в пути'
+];
+
 // ============ TRIGGERS ============
 
 function onOpen() {
@@ -54,6 +82,7 @@ function onOpen() {
     .addItem('Setup "Контакты" sheet', 'setupContactsSheet')
     .addItem('Setup "Менеджеры" sheet', 'setupManagersSheet')
     .addItem('Sync contacts now', 'syncContacts')
+    .addItem('Setup status dropdown', 'setupStatusDropdown')
     .addToUi();
 }
 
@@ -142,6 +171,93 @@ function syncContacts() {
   SpreadsheetApp.getUi().alert('Клиентов: ' + clients + ', менеджеров: ' + managers + ' ✅');
 }
 
+// ============ STATUS DROPDOWN ============
+
+/** The status list sheet, seeded with the common wordings on first run. */
+function getStatusListSheet() {
+  const spreadsheet = SpreadsheetApp.getActive();
+  let sheet = spreadsheet.getSheetByName(STATUS_LIST_SHEET_NAME);
+  if (!sheet) {
+    sheet = spreadsheet.insertSheet(STATUS_LIST_SHEET_NAME);
+    sheet.getRange(1, 1).setValue('Статус').setFontWeight('bold');
+    sheet.setFrozenRows(1);
+    const seed = DEFAULT_STATUSES.map(function (value) { return [value]; });
+    sheet.getRange(2, 1, seed.length, 1).setValues(seed);
+    sheet.hideSheet();
+  }
+  return sheet;
+}
+
+function readStatusList() {
+  const sheet = getStatusListSheet();
+  const last = sheet.getLastRow();
+  if (last < 2) return [];
+  return sheet.getRange(2, 1, last - 1, 1).getValues()
+    .map(function (row) { return row[0] ? row[0].toString().trim() : ''; })
+    .filter(function (value) { return value !== ''; });
+}
+
+/**
+ * Applies the dropdown to every "Status N" column on "Трекинг".
+ * setAllowInvalid(true) is the whole point: the list is a shortcut, never a
+ * restriction, so a wording nobody anticipated can still be typed.
+ */
+function applyStatusValidation() {
+  const sheet = SpreadsheetApp.getActive().getSheetByName(TRACKING_SHEET_NAME);
+  if (!sheet) return;
+  const statuses = readStatusList();
+  if (statuses.length === 0) return;
+
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const rule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(statuses, true)
+    .setAllowInvalid(true)
+    .build();
+
+  const lastRow = Math.max(sheet.getMaxRows(), 2);
+  for (let i = 0; i < headers.length; i++) {
+    const header = headers[i] ? headers[i].toString().trim() : '';
+    if (header.indexOf(STATUS_PREFIX + ' ') !== 0) continue;
+    sheet.getRange(2, i + 1, lastRow - 1, 1).setDataValidation(rule);
+  }
+}
+
+function setupStatusDropdown() {
+  getStatusListSheet();
+  applyStatusValidation();
+  SpreadsheetApp.getUi().alert('Выпадающий список статусов готов: ' + readStatusList().length + ' вариантов. Свой текст тоже принимается и попадёт в список. ✅');
+}
+
+/** Adds a hand-typed status to the list so it is offered from now on. */
+function rememberStatus(value) {
+  const text = value ? value.toString().trim() : '';
+  if (!text) return false;
+  const existing = readStatusList();
+  for (let i = 0; i < existing.length; i++) {
+    if (existing[i].toLowerCase() === text.toLowerCase()) return false;
+  }
+  const sheet = getStatusListSheet();
+  sheet.getRange(sheet.getLastRow() + 1, 1).setValue(text);
+  applyStatusValidation();
+  return true;
+}
+
+/** Picks up every hand-typed status in the range the manager just edited. */
+function rememberEditedStatuses(sheet, headers, firstDataRow, lastDataRow) {
+  const data = sheet.getDataRange().getValues();
+  let added = false;
+  for (let row = firstDataRow; row <= lastDataRow; row++) {
+    const rowData = data[row - 1];
+    if (!rowData) continue;
+    for (let i = 0; i < headers.length; i++) {
+      const header = headers[i] ? headers[i].toString().trim() : '';
+      if (header.indexOf(STATUS_PREFIX + ' ') !== 0) continue;
+      if (rememberStatus(rowData[i])) added = true;
+    }
+  }
+  return added;
+}
+
 function enableAutoSync() {
   const triggers = ScriptApp.getProjectTriggers();
   for (const trigger of triggers) {
@@ -201,6 +317,8 @@ function onEdit(e) {
   const lastDataRow = startRow + numRows - 1;
 
   if (sheetName === TRACKING_SHEET_NAME) {
+    // Grow the dropdown from whatever was just typed, before syncing.
+    rememberEditedStatuses(sheet, headers, firstDataRow, lastDataRow);
     const rows = [];
     for (let row = firstDataRow; row <= lastDataRow; row++) {
       const rowData = data[row - 1];
@@ -225,6 +343,13 @@ function onEdit(e) {
         route: getCell(headers, rowData, 'Route'),
         eta: formatDate(getCellRaw(headers, rowData, 'ETA')),
         stage: getCell(headers, rowData, STAGE_COL_NAME),
+        origin: getCell(headers, rowData, 'Откуда'),
+        destination: getCell(headers, rowData, 'Куда'),
+        weightKg: getCell(headers, rowData, 'Вес (кг)'),
+        volumeM3: getCell(headers, rowData, 'Объём (м³)'),
+        packages: getCell(headers, rowData, 'Мест'),
+        price: getCell(headers, rowData, 'Цена'),
+        currency: getCell(headers, rowData, 'Валюта'),
       });
     }
     if (rows.length > 0) sendWebhook('/webhook/order-sync', { rows: rows });

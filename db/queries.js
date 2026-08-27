@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 const { pool, withTransaction } = require('./db');
 const { normalizePhone } = require('../lib/phone');
+const { parseDecimal } = require('../lib/format');
 
 const STAGES = { AT_FACTORY: { emoji: '🏭', label: 'На заводе' }, IN_TRANSIT: { emoji: '🚚', label: 'В пути' }, DELIVERED: { emoji: '✅', label: 'Доставлен' } };
 const DEFAULT_STAGE = 'AT_FACTORY';
@@ -97,10 +98,26 @@ async function completeClientRegistration(telegramId, phone, client) {
     [normalized, contact.full_name || null, nowIso(), telegramId]);
   return { phone: normalized, contact };
 }
+const toInt = (raw) => { const n = parseDecimal(raw); return n === null ? null : Math.round(n); };
+
+/** Shipment particulars, shared by insert and update so both stay in step. */
+function cargoFields(data) {
+  return [
+    data.origin || null,
+    data.destination || null,
+    parseDecimal(data.weightKg),
+    parseDecimal(data.volumeM3),
+    toInt(data.packages),
+    parseDecimal(data.price),
+    data.currency || null,
+  ];
+}
+
 async function createOrder(data, client) {
   const now = nowIso();
-  await runner(client).query(`INSERT INTO orders(order_number,cargo_description,route,eta_date,current_status,telegram_id,client_name,bound_phone,stage,created_at,updated_at)
-    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)`, [data.orderNumber,data.cargoDescription||null,data.route||null,data.etaDate||null,data.currentStatus||null,data.telegramId||null,data.clientName||null,normalizePhone(data.boundPhone),normalizeStage(data.stage)||DEFAULT_STAGE,now]);
+  await runner(client).query(`INSERT INTO orders(order_number,cargo_description,route,eta_date,current_status,telegram_id,client_name,bound_phone,stage,origin,destination,weight_kg,volume_m3,packages,price,currency,created_at,updated_at)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17)`,
+  [data.orderNumber,data.cargoDescription||null,data.route||null,data.etaDate||null,data.currentStatus||null,data.telegramId||null,data.clientName||null,normalizePhone(data.boundPhone),normalizeStage(data.stage)||DEFAULT_STAGE,...cargoFields(data),now]);
 }
 async function findOrder(orderNumber, client) { return (await runner(client).query('SELECT * FROM orders WHERE order_number=$1',[orderNumber])).rows[0]; }
 async function updateOrder(data, client) { await runner(client).query('UPDATE orders SET cargo_description=$1,route=$2,eta_date=$3,client_name=$4,bound_phone=$5,updated_at=$6 WHERE order_number=$7',[data.cargoDescription,data.route,data.etaDate||null,data.clientName,normalizePhone(data.boundPhone),nowIso(),data.orderNumber]); }
@@ -110,8 +127,9 @@ async function upsertOrderMasterData(data, client) {
   const boundClient = phone ? (await runner(client).query('SELECT * FROM clients WHERE phone=$1 LIMIT 1', [phone])).rows[0] : null;
   const telegramId = boundClient ? boundClient.telegram_id : null;
   if (!existing) { await createOrder({ ...data, telegramId }, client); return { created: true }; }
-  await runner(client).query(`UPDATE orders SET cargo_description=$1,route=$2,eta_date=$3,client_name=$4,bound_phone=$5,telegram_id=$6,stage=$7,updated_at=$8 WHERE order_number=$9`,
-    [data.cargoDescription,data.route,data.etaDate||null,data.clientName,phone,telegramId,normalizeStage(data.stage)||existing.stage,nowIso(),data.orderNumber]);
+  await runner(client).query(`UPDATE orders SET cargo_description=$1,route=$2,eta_date=$3,client_name=$4,bound_phone=$5,telegram_id=$6,stage=$7,
+    origin=$8,destination=$9,weight_kg=$10,volume_m3=$11,packages=$12,price=$13,currency=$14,updated_at=$15 WHERE order_number=$16`,
+  [data.cargoDescription,data.route,data.etaDate||null,data.clientName,phone,telegramId,normalizeStage(data.stage)||existing.stage,...cargoFields(data),nowIso(),data.orderNumber]);
   return { created: false };
 }
 async function resolveClientBindings(client) {

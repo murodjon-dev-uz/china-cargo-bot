@@ -99,3 +99,13 @@ ALTER TABLE contacts ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'client
 ALTER TABLE contacts DROP CONSTRAINT IF EXISTS contacts_role_check;
 ALTER TABLE contacts ADD CONSTRAINT contacts_role_check CHECK (role IN ('client','manager'));
 CREATE INDEX IF NOT EXISTS idx_contacts_role ON contacts(role);
+
+-- Shipment particulars. "route" stays as the legacy free-text field and is
+-- only rendered when origin/destination are empty, so old rows keep working.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS origin TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS destination TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS weight_kg NUMERIC(12,3);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS volume_m3 NUMERIC(12,3);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS packages INTEGER;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS price NUMERIC(14,2);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS currency TEXT;

@@ -75,6 +75,13 @@ async function main() {
         clientName: row[config.sheets.clientCol] || null,
         boundPhone: row[config.sheets.phoneCol] || null,
         stage: row['Этап'] || null,
+        origin: row[config.sheets.originCol] || null,
+        destination: row[config.sheets.destinationCol] || null,
+        weightKg: row[config.sheets.weightCol] || null,
+        volumeM3: row[config.sheets.volumeCol] || null,
+        packages: row[config.sheets.packagesCol] || null,
+        price: row[config.sheets.priceCol] || null,
+        currency: row[config.sheets.currencyCol] || null,
       }, client);
     }
   });
