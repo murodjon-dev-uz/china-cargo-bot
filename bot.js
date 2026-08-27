@@ -1,7 +1,8 @@
 const { Telegraf } = require('telegraf');
 const config = require('./config');
 const logger = require('./lib/logger');
-require('./db/db'); // initializes schema + seed data on first run
+const database = require('./db/db');
+const { migrate } = require('./db/migrate');
 
 const { registerStart } = require('./handlers/start');
 const { registerMyOrders } = require('./handlers/myOrders');
@@ -11,6 +12,8 @@ const { registerSchedules } = require('./scheduler');
 const { startWebhookServer } = require('./webhook');
 
 const bot = new Telegraf(config.botToken);
+let webhookServer;
+let shuttingDown = false;
 
 // Registration order matters: button-text handlers must come before the
 // generic manager text-catcher in managerCommands.js, so a manager tapping
@@ -29,16 +32,30 @@ process.on('unhandledRejection', (err) => logger.error('unhandledRejection', err
 // (it awaits the polling loop itself, which runs until shutdown). The second
 // argument is telegraf's dedicated "authenticated, about to start polling"
 // callback — that's the correct place to register schedules, not `.then()`.
-bot
-  .launch({}, () => {
+async function main() {
+  await migrate();
+  await database.ping();
+  await bot.launch({}, () => {
     logger.info('China Cargo bot: launched (long polling)');
     registerSchedules(bot.telegram);
-    startWebhookServer(3000);
-  })
-  .catch((err) => {
-    logger.error('Bot stopped with an error', err);
-    process.exit(1);
+    webhookServer = startWebhookServer(config.port);
   });
+}
 
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info('Graceful shutdown', signal);
+  bot.stop(signal);
+  if (webhookServer) await new Promise((resolve) => webhookServer.close(resolve));
+  await database.close();
+  process.exit(0);
+}
+
+main().catch((err) => {
+  logger.error('Application failed', err);
+  process.exit(1);
+});
+
+process.once('SIGINT', () => shutdown('SIGINT'));
+process.once('SIGTERM', () => shutdown('SIGTERM'));

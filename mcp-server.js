@@ -37,11 +37,11 @@ server.registerTool(
     inputSchema: { order_number: z.string().describe('Номер заявки, например CL-001') },
   },
   async ({ order_number }) => {
-    const order = queries.findOrder(order_number);
+    const order = await queries.findOrder(order_number);
     if (!order) {
       return { content: [{ type: 'text', text: `Заявка ${order_number} не найдена.` }] };
     }
-    const history = queries.getOrderHistory(order_number);
+    const history = await queries.getOrderHistory(order_number);
     const lines = [
       `Заявка ${order.order_number}`,
       order.cargo_description ? `Груз: ${order.cargo_description}` : null,
@@ -84,7 +84,7 @@ server.registerTool(
     },
   },
   async ({ order_number, message }) => {
-    const order = queries.findOrder(order_number);
+    const order = await queries.findOrder(order_number);
     if (!order) {
       return { content: [{ type: 'text', text: `Ошибка: заявка ${order_number} не найдена.` }], isError: true };
     }
@@ -130,11 +130,11 @@ server.registerTool(
       await sheets.writeCell(config.sheets.trackingTab, rowNum, dateCol, today);
 
       // Update DB
-      if (!queries.hasSyncedBefore(order_number, message, null)) {
-        queries.withTransaction(() => {
-          queries.updateOrderStatus({ orderNumber: order_number, statusText: message, comment: null });
-          queries.appendStatusHistory({ orderNumber: order_number, statusText: message, comment: null, source: 'openclaw_manager' });
-          queries.recordSyncLog(order_number, message, null, 'applied');
+      if (!(await queries.hasSyncedBefore(order_number, message, null))) {
+        await queries.withTransaction(async (client) => {
+          await queries.updateOrderStatus({ orderNumber: order_number, statusText: message, comment: null }, client);
+          await queries.appendStatusHistory({ orderNumber: order_number, statusText: message, comment: null, source: 'openclaw_manager' }, client);
+          await queries.recordSyncLog(order_number, message, null, 'applied', client);
         });
       }
 

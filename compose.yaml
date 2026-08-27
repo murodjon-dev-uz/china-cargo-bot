@@ -1,0 +1,80 @@
+name: china-cargo
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-china_cargo}
+      POSTGRES_USER: ${POSTGRES_USER:-china_cargo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      TZ: ${TZ:-Asia/Tashkent}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [backend]
+
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-china_cargo}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-china_cargo}
+      PORT: 3000
+      TZ: ${TZ:-Asia/Tashkent}
+      GOOGLE_SERVICE_ACCOUNT_KEY_PATH: /run/secrets/google-service-account.json
+    volumes:
+      - ./service-account.json:/run/secrets/google-service-account.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    networks: [backend]
+    security_opt: ["no-new-privileges:true"]
+
+  tunnel:
+    image: ngrok/ngrok:3-alpine
+    restart: unless-stopped
+    command: ["http", "--url=https://${NGROK_DOMAIN}", "bot:3000"]
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:?Set NGROK_AUTHTOKEN in .env}
+    depends_on:
+      bot:
+        condition: service_healthy
+    networks: [backend]
+    security_opt: ["no-new-privileges:true"]
+
+  backup:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGDATABASE: ${POSTGRES_DB:-china_cargo}
+      PGUSER: ${POSTGRES_USER:-china_cargo}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      TZ: ${TZ:-Asia/Tashkent}
+    volumes:
+      - ./backups:/backups
+      - ./deploy/backup.sh:/usr/local/bin/backup.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/backup.sh"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [backend]
+
+networks:
+  backend:
+    driver: bridge
+
+volumes:
+  postgres_data:

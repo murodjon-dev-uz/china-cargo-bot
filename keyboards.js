@@ -50,7 +50,7 @@ function backToOrdersList() {
 
 function managerClientsList(groups) {
   const rows = groups.map((g) => {
-    const name = g.username ? `@${g.username}` : 'Без имени';
+    const name = g.name || 'Без имени';
     const unbound = g.telegramId == null ? ' ⚠️' : '';
     const label = `👤 ${truncate(name, 20)} · 🚚 ${g.active.length} · ✅ ${g.delivered.length}${unbound}`;
     return [Markup.button.callback(label, `mgr:g:${g.keyOrderNumber}`)];

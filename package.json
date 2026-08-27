@@ -6,14 +6,24 @@
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
-    "digest": "node jobs/morningDigest.js"
+    "digest": "node jobs/morningDigest.js",
+    "sync": "node scripts/sync-from-sheets.js",
+    "migrate": "node db/migrate.js",
+    "check": "node scripts/check.js",
+    "test": "node --test"
   },
+  "engines": { "node": ">=24" },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "dotenv": "^16.4.5",
     "express": "^4.22.2",
-    "googleapis": "^144.0.0",
-    "node-cron": "^3.0.3",
-    "telegraf": "^4.16.3"
+    "googleapis": "^176.0.0",
+    "helmet": "^8.1.0",
+    "node-cron": "^4.6.0",
+    "pg": "^8.16.3",
+    "pino": "^9.9.4",
+    "rate-limiter-flexible": "^7.3.0",
+    "telegraf": "^4.16.3",
+    "zod": "^3.25.76"
   }
 }

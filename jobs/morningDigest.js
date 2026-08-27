@@ -58,13 +58,13 @@ function buildMessage(orders, hour) {
 async function runMorningDigest(telegram, { force = false } = {}) {
   const { date, hour } = localNow();
 
-  if (!force && !queries.claimDigestDate(date)) {
+  if (!force && !(await queries.claimDigestDate(date))) {
     logger.info('morningDigest: already sent today, skipping', date);
     return { skipped: 'already_sent', clients: 0, sent: 0 };
   }
 
   logger.info('morningDigest: start', date);
-  const rows = queries.listActiveOrdersWithClients();
+  const rows = await queries.listActiveOrdersWithClients();
 
   const byClient = new Map();
   for (const row of rows) {
@@ -86,10 +86,10 @@ async function runMorningDigest(telegram, { force = false } = {}) {
     // Nothing reached anyone — release the day so a later run can retry
     // rather than marking the digest done on a total failure.
     if (byClient.size > 0 && sent === 0) {
-      queries.releaseDigestDate(date);
+      await queries.releaseDigestDate(date);
       logger.warn('morningDigest: no messages delivered, day released for retry', date);
     } else {
-      queries.recordDigestResult(date, byClient.size, sent);
+      await queries.recordDigestResult(date, byClient.size, sent);
     }
   }
 

@@ -1,95 +1,74 @@
-# China Cargo Bot — инструкция по запуску
+# China Cargo Bot
 
-Бот готов технически. Осталось собрать 5 вещей и вписать их в файл `.env`. Ниже — пошагово, без технического жаргона.
+Production-oriented Telegram tracking service for an office PC running Windows, WSL2 and Docker Desktop.
 
-## Шаг 1. Создать `.env`
+## Stack
 
-Скопируйте `.env.example` в `.env` (тот же файл, но без `.example` в конце) и заполняйте по мере прохождения шагов ниже.
+- Node.js 24, Telegraf and Express
+- PostgreSQL 17
+- Docker Compose
+- ngrok with a reserved domain
+- Google Sheets + Apps Script webhook
+- Daily PostgreSQL backups
 
-## Шаг 2. Токен бота (BOT_TOKEN)
+## Prerequisites
 
-1. Откройте Telegram, найдите **@BotFather**.
-2. Отправьте `/newbot`.
-3. Придумайте имя (например, "China Cargo Tracker") и username (должен заканчиваться на `bot`, например `china_cargo_tracker_bot`).
-4. BotFather пришлёт токен вида `123456789:AAExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`.
-5. Вставьте его в `.env` как `BOT_TOKEN=...`.
+1. Docker Desktop is running with WSL2.
+2. Put `service-account.json` in the repository root (never commit it).
+3. Copy `.env.example` to `.env` and fill every secret.
+4. Reserve an ngrok domain and set `NGROK_DOMAIN` and `NGROK_AUTHTOKEN`.
 
-## Шаг 3. Группа менеджеров и её ID (MANAGER_GROUP_CHAT_ID)
+## Start
 
-1. Создайте в Telegram группу (например, "China Cargo — менеджеры"), добавьте туда себя и старшего менеджера.
-2. Добавьте вашего нового бота в эту группу.
-3. Напишите в группе любое сообщение, затем откройте в браузере:
-   `https://api.telegram.org/bot<ВАШ_BOT_TOKEN>/getUpdates`
-   (вставьте свой токен вместо `<ВАШ_BOT_TOKEN>`).
-4. В ответе найдите `"chat":{"id":-100XXXXXXXXXX, ...}` — это и есть ID группы (число, обычно начинается с `-100`).
-5. Впишите его в `.env` как `MANAGER_GROUP_CHAT_ID=-100XXXXXXXXXX`.
-
-## Шаг 4. Telegram ID менеджеров (MANAGER_TELEGRAM_IDS)
-
-Нужны **числовые** ID (не @username) вас и старшего менеджера — это то, что даёт право на команду `/status` для экстренной смены статуса.
-
-1. В Telegram найдите бота **@userinfobot**, напишите ему `/start` — он пришлёт ваш числовой ID.
-2. Попросите второго менеджера сделать то же самое.
-3. Впишите оба через запятую: `MANAGER_TELEGRAM_IDS=111111111,222222222`.
-
-## Шаг 5. Google-таблица
-
-1. Создайте новую таблицу на [sheets.google.com](https://sheets.google.com).
-2. Переименуйте первый лист в **«Заявки»**, второй (создайте новый) — в **«Статусы для бота»**.
-3. В «Заявки» сделайте заголовки в первой строке ровно такими (важен точный текст):
-   `Номер заявки | Клиент | Описание груза | Маршрут | ETA | Текущий статус (при создании)`
-4. В «Статусы для бота»:
-   `Номер заявки | Новый статус | Комментарий | Processed`
-5. **Выпадающий список статусов**: выделите колонку "Текущий статус (при создании)" (в «Заявки») и колонку "Новый статус" (в «Статусы для бота») → Данные → Проверка данных → «Значение из списка» → впишите ровно эти коды (см. таблицу ниже, колонка `code`) — так вы не ошибётесь при вводе.
-6. Скопируйте ID таблицы из адресной строки браузера — это длинная строка между `/d/` и `/edit` в ссылке:
-   `https://docs.google.com/spreadsheets/d/ЭТОТ_КУСОК/edit`
-7. Впишите в `.env` как `SPREADSHEET_ID=...`.
-
-### Список статусов по умолчанию (можно менять/дополнять)
-
-| Код (вписывать в таблицу) | Что видит клиент |
-|---|---|
-| `AT_WAREHOUSE_CN` | 🏭 На складе в Китае |
-| `IN_TRANSIT` | 🚚 В пути |
-| `AT_BORDER` | 🛂 На границе |
-| `CUSTOMS` | 📋 На таможне |
-| `DELIVERED` | ✅ Доставлен (финальный — уходит в «Историю») |
-
-Если нужен другой набор статусов — просто скажите, я поправлю список в коде бота (файл `db/db.js`).
-
-## Шаг 6. Сервисный аккаунт Google (доступ бота к таблице)
-
-1. Перейдите на [console.cloud.google.com](https://console.cloud.google.com), создайте новый проект (любое имя).
-2. В поиске найдите **"Google Sheets API"** → нажмите **Enable**.
-3. Слева: **IAM и администрирование → Сервисные аккаунты → Создать сервисный аккаунт**. Имя любое, роль не обязательна.
-4. Откройте созданный аккаунт → вкладка **«Ключи»** → **Добавить ключ → Создать ключ → JSON**. Файл скачается автоматически.
-5. Переименуйте скачанный файл в `service-account.json` и положите его в папку `china-cargo-bot` (рядом с `bot.js`).
-6. Откройте этот JSON-файл, найдите там `"client_email": "....iam.gserviceaccount.com"`.
-7. Откройте вашу Google-таблицу → **Настройки доступа** → добавьте этот email как **Редактор**.
-8. **Защитите остальные столбцы** (чтобы бот случайно их не менял): Данные → Защищённые листы и диапазоны → выберите диапазон `A:C` на обеих вкладках → «Только я». Столбец `D` (Processed) оставьте без защиты.
-
-## Шаг 7. Запуск и проверка
-
-Откройте PowerShell в папке `china-cargo-bot` и выполните по очереди:
-
-```bash
-npm run sync
-```
-— проверяет, что бот видит вашу таблицу (создаст заявки, разошлёт уведомления, если в таблице уже что-то заполнено).
-
-```bash
-npm start
-```
-— запускает самого бота. Напишите ему `/start` в Telegram — должно прийти приветствие с двумя кнопками.
-
-Если всё работает — остановите (`Ctrl+C`) и включите автозапуск:
-
-```bash
-powershell -ExecutionPolicy Bypass -File deploy\install-task.ps1
+```powershell
+docker compose config
+docker compose up -d --build
+docker compose ps
+docker compose logs -f bot
 ```
 
-После этого бот будет сам подниматься при каждом входе в Windows — как ваш второй бот Defender, но полностью отдельно от него.
+## Google Apps Script
 
-## Как позже поменять список статусов
+Copy `deploy/google-apps-script.gs` into the spreadsheet's Apps Script project. In **Project Settings → Script properties**, set:
 
-Откройте `db/db.js`, найдите массив `seed` и отредактируйте. Изменения применяются только к **новой** базе — если бот уже запускался, поменяйте таблицу `status_catalog` через любой SQLite-инструмент, либо просто попросите меня внести правки.
+- `WEBHOOK_BASE_URL=https://<NGROK_DOMAIN>`
+- `WEBHOOK_SECRET` to the same value as `.env`
+
+Run `onOpen`, return to the sheet and choose **China Cargo → Enable auto-sync**.
+
+## Client registration
+
+Clients register with `/start`, enter their name and share their own Telegram Contact. The bot verifies that the contact belongs to the sender and links orders exclusively by the normalized value in the `Телефон` column. Telegram usernames are neither stored nor used. One phone number can belong to only one Telegram account; conflicts are sent to the manager group for manual review.
+
+## Operations
+
+```powershell
+docker compose ps
+docker compose logs --tail 200 bot
+docker compose restart bot
+docker compose pull
+docker compose up -d --build
+```
+
+Containers use `restart: unless-stopped`. Docker Desktop must start when the Windows service account signs in.
+
+## Backups
+
+The `backup` service creates a PostgreSQL custom-format dump every 24 hours in `./backups` and removes local copies older than `BACKUP_RETENTION_DAYS`. Copy backups to storage outside this PC and test restoration regularly.
+
+## Security
+
+- Never commit `.env`, `service-account.json`, database dumps or logs.
+- PostgreSQL stays on the private Compose network and exposes no host port.
+- Rotate Telegram, Google, webhook and ngrok credentials after suspected exposure.
+- Only `/health` is unauthenticated; webhook routes require the shared secret and are rate-limited.
+
+## Verification before production
+
+1. Restart Windows.
+2. Confirm Docker and all four containers return automatically.
+3. Test local and public `/health`.
+4. Edit a test row in Google Sheets.
+5. Verify the Telegram status and morning digest.
+6. Stop the bot container and confirm it restarts.
+7. Restore a backup into a temporary database.

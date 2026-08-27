@@ -1,23 +1,29 @@
-const { DatabaseSync } = require('node:sqlite');
-const fs = require('node:fs');
-const path = require('node:path');
+const { Pool } = require('pg');
 const config = require('../config');
 
-fs.mkdirSync(path.dirname(config.dbPath), { recursive: true });
+const pool = new Pool({
+  connectionString: config.databaseUrl,
+  ssl: config.databaseSsl ? { rejectUnauthorized: false } : false,
+  max: Number(process.env.DB_POOL_SIZE || 10),
+  connectionTimeoutMillis: 10_000,
+  idleTimeoutMillis: 30_000,
+});
 
-const db = new DatabaseSync(config.dbPath);
-db.exec('PRAGMA journal_mode = WAL;');
-db.exec('PRAGMA foreign_keys = ON;');
-
-const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
-db.exec(schema);
-
-// Migration: `stage` was added after orders already existed in the wild —
-// CREATE TABLE IF NOT EXISTS above is a no-op on an existing table, so add
-// the column by hand when upgrading a pre-existing database.
-const orderColumns = db.prepare("PRAGMA table_info(orders)").all().map((c) => c.name);
-if (!orderColumns.includes('stage')) {
-  db.exec("ALTER TABLE orders ADD COLUMN stage TEXT NOT NULL DEFAULT 'AT_FACTORY'");
+async function withTransaction(fn) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
-module.exports = db;
+async function ping() { await pool.query('SELECT 1'); }
+
+module.exports = { pool, withTransaction, ping, close: () => pool.end() };

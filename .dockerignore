@@ -1,0 +1,12 @@
+.git
+.gitignore
+.env
+service-account.json
+node_modules
+data
+logs
+backups
+npm-debug.log*
+README.md
+STARTUP_COMMANDS.md
+WEBHOOK_SETUP.md

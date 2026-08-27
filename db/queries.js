@@ -1,318 +1,83 @@
 const crypto = require('node:crypto');
-const db = require('./db');
+const { pool, withTransaction } = require('./db');
+const { normalizePhone } = require('../lib/phone');
 
-function nowIso() {
-  return new Date().toISOString();
-}
-
-function withTransaction(fn) {
-  db.exec('BEGIN');
-  try {
-    const result = fn();
-    db.exec('COMMIT');
-    return result;
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
-}
-
-function contentHash(statusText, comment) {
-  return crypto
-    .createHash('sha256')
-    .update(`${statusText}|${comment || ''}`)
-    .digest('hex');
-}
-
-// --- clients ---
-
-function upsertClient({ telegramId, username, firstName }) {
-  const now = nowIso();
-  db.prepare(
-    `INSERT INTO clients (telegram_id, username, first_name, first_seen_at, last_seen_at)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(telegram_id) DO UPDATE SET
-       username = excluded.username,
-       first_name = excluded.first_name,
-       last_seen_at = excluded.last_seen_at`
-  ).run(telegramId, username || null, firstName || null, now, now);
-}
-
-function findClientByUsername(username) {
-  if (!username) return undefined;
-  return db
-    .prepare('SELECT * FROM clients WHERE username = ? COLLATE NOCASE')
-    .get(normalizeUsername(username));
-}
-
-function normalizeUsername(raw) {
-  return String(raw).trim().replace(/^@/, '');
-}
-
-// --- orders ---
-
-// Classification the bot uses for its own logic (digest filtering, order-list
-// badges) — separate from the free-text status the client reads. Exactly
-// three fixed values, set by the manager via a dropdown in the "Заявки" tab.
-const STAGES = {
-  AT_FACTORY: { emoji: '🏭', label: 'На заводе' },
-  IN_TRANSIT: { emoji: '🚚', label: 'В пути' },
-  DELIVERED: { emoji: '✅', label: 'Доставлен' },
-};
+const STAGES = { AT_FACTORY: { emoji: '🏭', label: 'На заводе' }, IN_TRANSIT: { emoji: '🚚', label: 'В пути' }, DELIVERED: { emoji: '✅', label: 'Доставлен' } };
 const DEFAULT_STAGE = 'AT_FACTORY';
+const STAGE_BY_CELL_TEXT = Object.fromEntries(Object.entries(STAGES).map(([code, value]) => [`${value.emoji} ${value.label}`, code]));
+const nowIso = () => new Date().toISOString();
+const normalizeStage = (stage) => stage && (STAGES[stage] ? stage : STAGE_BY_CELL_TEXT[String(stage).trim()]) || null;
+const getStageInfo = (stage) => STAGES[stage] || STAGES[DEFAULT_STAGE];
+const contentHash = (statusText, comment) => crypto.createHash('sha256').update(`${statusText}|${comment || ''}`).digest('hex');
+const runner = (client) => client || pool;
 
-function getStageInfo(stage) {
-  return STAGES[stage] || STAGES[DEFAULT_STAGE];
-}
-
-// Accepts either a raw code ("AT_FACTORY") or the exact dropdown cell text
-// ("🏭 На заводе") that Apps Script sends verbatim — resolves either to a
-// valid code, or null if unrecognized (caller keeps the existing stage then).
-const STAGE_BY_CELL_TEXT = Object.fromEntries(
-  Object.entries(STAGES).map(([code, { emoji, label }]) => [`${emoji} ${label}`, code])
-);
-
-function normalizeStage(stage) {
-  if (!stage) return null;
-  if (STAGES[stage]) return stage;
-  return STAGE_BY_CELL_TEXT[stage.trim()] || null;
-}
-
-function createOrder({
-  orderNumber,
-  cargoDescription,
-  route,
-  etaDate,
-  currentStatus,
-  boundUsername,
-  telegramId,
-  stage
-}) {
+async function upsertClient({ telegramId, firstName }, client) {
   const now = nowIso();
-  db.prepare(
-    `INSERT INTO orders (order_number, cargo_description, route, eta_date, current_status, telegram_id, bound_username, stage, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(orderNumber, cargoDescription || null, route || null, etaDate || null, currentStatus || null, telegramId || null, boundUsername || null, normalizeStage(stage) || DEFAULT_STAGE, now, now);
+  await runner(client).query(`INSERT INTO clients(telegram_id,first_name,first_seen_at,last_seen_at) VALUES($1,$2,$3,$3)
+    ON CONFLICT(telegram_id) DO UPDATE SET first_name=EXCLUDED.first_name,last_seen_at=EXCLUDED.last_seen_at`,
+  [telegramId, firstName || null, now]);
 }
-
-function findOrder(orderNumber) {
-  return db.prepare('SELECT * FROM orders WHERE order_number = ?').get(orderNumber);
+async function getClient(telegramId, client) {
+  return (await runner(client).query('SELECT * FROM clients WHERE telegram_id=$1', [telegramId])).rows[0];
 }
-
-function updateOrder({ orderNumber, cargoDescription, route, etaDate, boundUsername }) {
-  const now = nowIso();
-  db.prepare(
-    `UPDATE orders SET cargo_description = ?, route = ?, eta_date = ?, bound_username = ?, updated_at = ?
-     WHERE order_number = ?`
-  ).run(cargoDescription, route, etaDate, boundUsername, now, orderNumber);
+async function setClientName(telegramId, fullName, client) {
+  await runner(client).query("UPDATE clients SET full_name=$1,registration_state='AWAITING_PHONE',last_seen_at=$2 WHERE telegram_id=$3", [fullName, nowIso(), telegramId]);
 }
-
-// Real-time master-data sync from the "Заявки" tab (create-or-update).
-// Re-resolves telegram_id from bound_username on every call, so a client
-// who /start's the bot after their order was created gets bound on the very
-// next edit to their row (or self-heals automatically — see resolveClientBindings).
-function upsertOrderMasterData({ orderNumber, cargoDescription, route, etaDate, boundUsername, stage }) {
-  const existing = findOrder(orderNumber);
-  const client = findClientByUsername(boundUsername);
-  const telegramId = client ? client.telegram_id : (existing ? existing.telegram_id : null);
-
-  if (!existing) {
-    createOrder({ orderNumber, cargoDescription, route, etaDate, boundUsername, telegramId, stage });
-    return { created: true };
+async function completeClientRegistration(telegramId, phone, client) {
+  const normalized = normalizePhone(phone);
+  if (!normalized) throw new Error('Invalid phone number');
+  const owner = (await runner(client).query('SELECT telegram_id FROM clients WHERE phone=$1 AND telegram_id<>$2 LIMIT 1', [normalized, telegramId])).rows[0];
+  if (owner) {
+    const error = new Error('Phone number is already registered');
+    error.code = 'PHONE_IN_USE';
+    error.ownerTelegramId = owner.telegram_id;
+    error.phone = normalized;
+    throw error;
   }
-
-  // An empty/unrecognized stage from the sheet leaves the existing stage
-  // untouched, rather than silently resetting it to the default.
-  const nextStage = normalizeStage(stage) || existing.stage;
-
+  await runner(client).query(`UPDATE clients SET phone=$1,registration_state='REGISTERED',registration_completed_at=$2,last_seen_at=$2 WHERE telegram_id=$3`, [normalized, nowIso(), telegramId]);
+  return normalized;
+}
+async function createOrder(data, client) {
   const now = nowIso();
-  db.prepare(
-    `UPDATE orders SET cargo_description = ?, route = ?, eta_date = ?, bound_username = ?, telegram_id = ?, stage = ?, updated_at = ?
-     WHERE order_number = ?`
-  ).run(cargoDescription, route, etaDate, boundUsername, telegramId, nextStage, now, orderNumber);
+  await runner(client).query(`INSERT INTO orders(order_number,cargo_description,route,eta_date,current_status,telegram_id,client_name,bound_phone,stage,created_at,updated_at)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)`, [data.orderNumber,data.cargoDescription||null,data.route||null,data.etaDate||null,data.currentStatus||null,data.telegramId||null,data.clientName||null,normalizePhone(data.boundPhone),normalizeStage(data.stage)||DEFAULT_STAGE,now]);
+}
+async function findOrder(orderNumber, client) { return (await runner(client).query('SELECT * FROM orders WHERE order_number=$1',[orderNumber])).rows[0]; }
+async function updateOrder(data, client) { await runner(client).query('UPDATE orders SET cargo_description=$1,route=$2,eta_date=$3,client_name=$4,bound_phone=$5,updated_at=$6 WHERE order_number=$7',[data.cargoDescription,data.route,data.etaDate||null,data.clientName,normalizePhone(data.boundPhone),nowIso(),data.orderNumber]); }
+async function upsertOrderMasterData(data, client) {
+  const existing = await findOrder(data.orderNumber, client);
+  const phone = normalizePhone(data.boundPhone);
+  const boundClient = phone ? (await runner(client).query('SELECT * FROM clients WHERE phone=$1 LIMIT 1', [phone])).rows[0] : null;
+  const telegramId = boundClient ? boundClient.telegram_id : null;
+  if (!existing) { await createOrder({ ...data, telegramId }, client); return { created: true }; }
+  await runner(client).query(`UPDATE orders SET cargo_description=$1,route=$2,eta_date=$3,client_name=$4,bound_phone=$5,telegram_id=$6,stage=$7,updated_at=$8 WHERE order_number=$9`,
+    [data.cargoDescription,data.route,data.etaDate||null,data.clientName,phone,telegramId,normalizeStage(data.stage)||existing.stage,nowIso(),data.orderNumber]);
   return { created: false };
 }
-
-// Re-resolves telegram_id for every order with an unbound or stale
-// bound_username against the clients table. Called after a client presses
-// /start, so any order pre-assigned to their username self-heals immediately.
-function resolveClientBindings() {
-  const orders = db.prepare('SELECT order_number, bound_username, telegram_id FROM orders WHERE bound_username IS NOT NULL').all();
-  let bound = 0;
-  for (const o of orders) {
-    const client = findClientByUsername(o.bound_username);
-    if (client && client.telegram_id !== o.telegram_id) {
-      db.prepare('UPDATE orders SET telegram_id = ?, updated_at = ? WHERE order_number = ?')
-        .run(client.telegram_id, nowIso(), o.order_number);
-      bound++;
-    }
-  }
-  return bound;
-}
-
-function updateOrderStatus({ orderNumber, statusText, comment }) {
+async function resolveClientBindings(client) {
+  const db = runner(client);
   const now = nowIso();
-  db.prepare(
-    `UPDATE orders SET current_status = ?, current_comment = ?, updated_at = ?
-     WHERE order_number = ?`
-  ).run(statusText, comment || null, now, orderNumber);
+  await db.query(`UPDATE orders o SET telegram_id=NULL,updated_at=$1
+    WHERE telegram_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM clients c WHERE c.telegram_id=o.telegram_id AND c.phone=o.bound_phone)`, [now]);
+  return (await db.query(`UPDATE orders o SET telegram_id=c.telegram_id,updated_at=$1 FROM clients c
+    WHERE o.bound_phone IS NOT NULL AND c.phone=o.bound_phone AND o.telegram_id IS DISTINCT FROM c.telegram_id`,[now])).rowCount;
 }
-
-function listOrdersForClient(telegramId) {
-  return db.prepare('SELECT * FROM orders WHERE telegram_id = ? ORDER BY created_at DESC').all(telegramId);
+async function updateOrderStatus(data, client) { await runner(client).query('UPDATE orders SET current_status=$1,current_comment=$2,updated_at=$3 WHERE order_number=$4',[data.statusText,data.comment||null,nowIso(),data.orderNumber]); }
+async function listOrdersForClient(id) { return (await pool.query('SELECT * FROM orders WHERE telegram_id=$1 ORDER BY created_at DESC',[id])).rows; }
+async function listActiveOrdersWithClients() { return (await pool.query("SELECT * FROM orders WHERE telegram_id IS NOT NULL AND stage!='DELIVERED' ORDER BY telegram_id")).rows; }
+async function listAllOrdersForOverview() { return (await pool.query("SELECT * FROM orders ORDER BY COALESCE(client_name,''),telegram_id NULLS LAST,created_at")).rows; }
+async function appendStatusHistory(data, client) { await runner(client).query('INSERT INTO status_history(order_number,status_text,comment,changed_at,source) VALUES($1,$2,$3,$4,$5)',[data.orderNumber,data.statusText,data.comment||null,nowIso(),data.source||'manual']); }
+async function getOrderHistory(orderNumber) { return (await pool.query(`SELECT * FROM (SELECT h.*,ROW_NUMBER() OVER(PARTITION BY status_text ORDER BY changed_at DESC) rn FROM status_history h WHERE order_number=$1) x WHERE rn=1 ORDER BY changed_at`,[orderNumber])).rows; }
+async function replaceSheetStatusHistory(orderNumber, statuses, client) {
+  const db=runner(client); await db.query("DELETE FROM status_history WHERE order_number=$1 AND source='sheet_webhook'",[orderNumber]); let lastText=null;
+  for(let i=0;i<statuses.length;i++){const s=statuses[i];if(!s.text)continue;const changedAt=s.date?new Date(new Date(s.date).getTime()+i*1000):new Date(Date.now()+i*1000);await db.query("INSERT INTO status_history(order_number,status_text,comment,changed_at,source) VALUES($1,$2,NULL,$3,'sheet_webhook')",[orderNumber,s.text,changedAt.toISOString()]);lastText=s.text;}
+  await db.query('UPDATE orders SET current_status=$1,updated_at=$2 WHERE order_number=$3',[lastText,nowIso(),orderNumber]);
 }
+async function recordSyncLog(orderNumber,statusText,comment,result,client){await runner(client).query(`INSERT INTO sync_log(order_number,content_hash,processed_at,result) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`,[orderNumber,contentHash(statusText,comment),nowIso(),result]);}
+async function hasSyncedBefore(orderNumber,statusText,comment){return (await pool.query('SELECT 1 FROM sync_log WHERE order_number=$1 AND content_hash=$2',[orderNumber,contentHash(statusText,comment)])).rowCount>0;}
+async function claimDigestDate(date){return (await pool.query('INSERT INTO digest_log(digest_date,sent_at) VALUES($1,$2) ON CONFLICT DO NOTHING',[date,nowIso()])).rowCount>0;}
+async function recordDigestResult(date,clients,delivered){await pool.query('UPDATE digest_log SET clients=$1,delivered=$2,sent_at=$3 WHERE digest_date=$4',[clients,delivered,nowIso(),date]);}
+async function releaseDigestDate(date){await pool.query('DELETE FROM digest_log WHERE digest_date=$1',[date]);}
+async function recordManagerAction(data,client){await runner(client).query('INSERT INTO manager_actions_log(manager_telegram_id,order_number,new_status_text,comment,created_at) VALUES($1,$2,$3,$4,$5)',[data.managerTelegramId,data.orderNumber,data.statusText||null,data.comment||null,nowIso()]);}
 
-// Used by the morning digest — excludes DELIVERED orders so clients stop
-// getting daily pings about shipments they already received.
-function listActiveOrdersWithClients() {
-  return db
-    .prepare("SELECT * FROM orders WHERE telegram_id IS NOT NULL AND stage != 'DELIVERED' ORDER BY telegram_id")
-    .all();
-}
-
-// Owner/manager overview — every order, across every client, grouped for
-// display. Orders whose client hasn't /start'd the bot yet (no telegram_id)
-// are grouped by their raw bound_username instead, so nothing is silently
-// dropped from the overview.
-function listAllOrdersForOverview() {
-  return db
-    .prepare(
-      `SELECT * FROM orders
-       ORDER BY COALESCE(bound_username, ''), telegram_id IS NULL, telegram_id, created_at`
-    )
-    .all();
-}
-
-// --- status history ---
-
-function appendStatusHistory({ orderNumber, statusText, comment, source }) {
-  const now = nowIso();
-  db.prepare(
-    `INSERT INTO status_history (order_number, status_text, comment, changed_at, source)
-     VALUES (?, ?, ?, ?, ?)`
-  ).run(orderNumber, statusText, comment || null, now, source || 'manual');
-}
-
-function getOrderHistory(orderNumber) {
-  return db
-    .prepare(
-      `SELECT h.*,
-              ROW_NUMBER() OVER (PARTITION BY h.status_text ORDER BY h.changed_at DESC) as rn
-       FROM status_history h
-       WHERE h.order_number = ?`
-    )
-    .all(orderNumber)
-    .filter(h => h.rn === 1)
-    .sort((a, b) => new Date(a.changed_at) - new Date(b.changed_at));
-}
-
-// Reconciles the sheet-driven portion of an order's history to exactly match
-// the given ordered list of {text, date}. The sheet is the source of truth
-// for this slice: existing 'sheet_webhook' rows are dropped and replaced,
-// so edits/reordering/deletion in the sheet are reflected correctly (not
-// just appends). Manager/OpenClaw-sourced history rows are untouched.
-function replaceSheetStatusHistory(orderNumber, statuses) {
-  db.prepare(`DELETE FROM status_history WHERE order_number = ? AND source = 'sheet_webhook'`).run(orderNumber);
-
-  let lastText = null;
-  statuses.forEach((s, i) => {
-    if (!s.text) return;
-    // Preserve row order even when multiple entries share a date: offset by
-    // index so ORDER BY changed_at keeps them in the sheet's left-to-right order.
-    const changedAt = s.date
-      ? new Date(new Date(s.date).getTime() + i * 1000).toISOString()
-      : new Date(Date.now() + i * 1000).toISOString();
-    db.prepare(
-      `INSERT INTO status_history (order_number, status_text, comment, changed_at, source)
-       VALUES (?, ?, NULL, ?, 'sheet_webhook')`
-    ).run(orderNumber, s.text, changedAt);
-    lastText = s.text;
-  });
-
-  const now = nowIso();
-  db.prepare(`UPDATE orders SET current_status = ?, updated_at = ? WHERE order_number = ?`)
-    .run(lastText, now, orderNumber);
-}
-
-// --- sync log ---
-
-function recordSyncLog(orderNumber, statusText, comment, result) {
-  const hash = contentHash(statusText, comment);
-  const now = nowIso();
-  db.prepare(
-    `INSERT OR IGNORE INTO sync_log (order_number, content_hash, processed_at, result)
-     VALUES (?, ?, ?, ?)`
-  ).run(orderNumber, hash, now, result);
-}
-
-function hasSyncedBefore(orderNumber, statusText, comment) {
-  const hash = contentHash(statusText, comment);
-  const row = db
-    .prepare('SELECT 1 FROM sync_log WHERE order_number = ? AND content_hash = ?')
-    .get(orderNumber, hash);
-  return !!row;
-}
-
-// --- daily digest bookkeeping ---
-
-/**
- * Atomically claims a date for the digest. Returns true only for the caller
- * that got there first — every later attempt that day (a restart, or the
- * catch-up run racing the 09:00 cron) gets false and sends nothing.
- */
-function claimDigestDate(digestDate) {
-  const result = db
-    .prepare('INSERT OR IGNORE INTO digest_log (digest_date, sent_at) VALUES (?, ?)')
-    .run(digestDate, nowIso());
-  return result.changes > 0;
-}
-
-function recordDigestResult(digestDate, clients, delivered) {
-  db.prepare('UPDATE digest_log SET clients = ?, delivered = ?, sent_at = ? WHERE digest_date = ?')
-    .run(clients, delivered, nowIso(), digestDate);
-}
-
-/** Releases a claimed date so a later run can retry (used when sending failed outright). */
-function releaseDigestDate(digestDate) {
-  db.prepare('DELETE FROM digest_log WHERE digest_date = ?').run(digestDate);
-}
-
-// --- manager actions ---
-
-function recordManagerAction({ managerTelegramId, orderNumber, statusText, comment }) {
-  const now = nowIso();
-  db.prepare(
-    `INSERT INTO manager_actions_log (manager_telegram_id, order_number, new_status_text, comment, created_at)
-     VALUES (?, ?, ?, ?, ?)`
-  ).run(managerTelegramId, orderNumber, statusText || null, comment || null, now);
-}
-
-// --- exports ---
-
-module.exports = {
-  withTransaction,
-  contentHash,
-  upsertClient,
-  findClientByUsername,
-  normalizeUsername,
-  createOrder,
-  findOrder,
-  updateOrder,
-  upsertOrderMasterData,
-  resolveClientBindings,
-  updateOrderStatus,
-  listOrdersForClient,
-  listActiveOrdersWithClients,
-  listAllOrdersForOverview,
-  STAGES,
-  getStageInfo,
-  appendStatusHistory,
-  getOrderHistory,
-  replaceSheetStatusHistory,
-  recordSyncLog,
-  hasSyncedBefore,
-  claimDigestDate,
-  recordDigestResult,
-  releaseDigestDate,
-  recordManagerAction,
-};
+module.exports={withTransaction,contentHash,upsertClient,getClient,setClientName,completeClientRegistration,createOrder,findOrder,updateOrder,upsertOrderMasterData,resolveClientBindings,updateOrderStatus,listOrdersForClient,listActiveOrdersWithClients,listAllOrdersForOverview,STAGES,getStageInfo,appendStatusHistory,getOrderHistory,replaceSheetStatusHistory,recordSyncLog,hasSyncedBefore,claimDigestDate,recordDigestResult,releaseDigestDate,recordManagerAction};

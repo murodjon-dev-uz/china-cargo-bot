@@ -15,12 +15,12 @@
 // 6. Run onOpen(), then use the China Cargo menu to enable auto-sync
 
 // ============ CONFIGURATION ============
-const WEBHOOK_BASE_URL = 'https://sleeve-dealt-strict.ngrok-free.dev';
+const WEBHOOK_BASE_URL = PropertiesService.getScriptProperties().getProperty('WEBHOOK_BASE_URL');
 // Paste the value of WEBHOOK_SECRET from the bot's .env here, in the Apps
 // Script editor only — it is deliberately not stored in the repository.
 // Without a matching secret the bot rejects every request with 401
 // (see webhook.js's requireWebhookSecret).
-const WEBHOOK_SECRET = 'ВСТАВЬТЕ_СЮДА_WEBHOOK_SECRET_ИЗ_ENV';
+const WEBHOOK_SECRET = PropertiesService.getScriptProperties().getProperty('WEBHOOK_SECRET');
 
 const TRACKING_SHEET_NAME = 'Трекинг';
 const ORDERS_SHEET_NAME = 'Заявки';
@@ -144,6 +144,7 @@ function onEdit(e) {
       rows.push({
         cargoId: cargoId.toString().trim(),
         client: getCell(headers, rowData, 'Client'),
+        phone: getCell(headers, rowData, 'Телефон'),
         cargo: getCell(headers, rowData, 'Cargo'),
         route: getCell(headers, rowData, 'Route'),
         eta: formatDate(getCellRaw(headers, rowData, 'ETA')),
@@ -187,6 +188,9 @@ function getCellRaw(headers, rowData, headerName) {
 
 function sendWebhook(path, data) {
   try {
+    if (!WEBHOOK_BASE_URL || !WEBHOOK_SECRET) {
+      throw new Error('Set WEBHOOK_BASE_URL and WEBHOOK_SECRET in Apps Script project properties');
+    }
     const payload = JSON.stringify(data);
     const options = {
       method: 'post',

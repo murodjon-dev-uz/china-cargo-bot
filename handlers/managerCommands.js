@@ -3,6 +3,7 @@ const logger = require('../lib/logger');
 const { isManager } = require('../lib/roles');
 const { escapeHtml, truncate, pluralOrders } = require('../lib/format');
 const { sortByRelevance, renderOrderCard } = require('../lib/orderCard');
+const { maskPhone } = require('../lib/phone');
 const {
   ALL_ORDERS_BUTTON,
   MY_ORDERS_BUTTON,
@@ -23,20 +24,20 @@ const MAX_MESSAGE_LEN = 3500;
 /**
  * Every order grouped by client, ordered most-relevant-first within each
  * group. Clients who haven't opened the bot yet are grouped by their
- * spreadsheet username and flagged — the manager needs to see exactly those,
+ * spreadsheet phone and flagged — the manager needs to see exactly those,
  * because they're the ones who can't receive notifications.
  *
  * Each group carries `keyOrderNumber` (any one of its orders) as its
  * callback-data key: order numbers are short and re-derive the group exactly,
- * unlike usernames (too long) or row indexes (go stale between renders).
+ * unlike row indexes (which go stale between renders).
  */
-function buildClientGroups() {
+async function buildClientGroups() {
   const byClient = new Map();
 
-  for (const o of queries.listAllOrdersForOverview()) {
-    const key = o.telegram_id != null ? `id:${o.telegram_id}` : `un:${o.bound_username || '—'}`;
+  for (const o of await queries.listAllOrdersForOverview()) {
+    const key = o.telegram_id != null ? `id:${o.telegram_id}` : `ph:${o.bound_phone || o.order_number}`;
     if (!byClient.has(key)) {
-      byClient.set(key, { username: o.bound_username || null, telegramId: o.telegram_id, orders: [] });
+      byClient.set(key, { name: o.client_name || null, phone: o.bound_phone || null, telegramId: o.telegram_id, orders: [] });
     }
     byClient.get(key).orders.push(o);
   }
@@ -48,27 +49,28 @@ function buildClientGroups() {
 }
 
 /** Re-derives a client's group from any single order number they own. */
-function findGroupByOrder(orderNumber) {
-  const order = queries.findOrder(orderNumber);
+async function findGroupByOrder(orderNumber) {
+  const order = await queries.findOrder(orderNumber);
   if (!order) return null;
-  return buildClientGroups().find((g) =>
+  return (await buildClientGroups()).find((g) =>
     order.telegram_id != null
       ? g.telegramId === order.telegram_id
-      : g.telegramId == null && g.username === order.bound_username
+      : g.telegramId == null && g.phone === order.bound_phone
   ) || null;
 }
 
 function clientIdentityLines(group) {
-  const name = group.username ? `@${escapeHtml(group.username)}` : 'Без имени';
+  const name = group.name ? escapeHtml(group.name) : 'Без имени';
+  const phone = maskPhone(group.phone);
   return group.telegramId != null
-    ? [`<b>👤 ${name}</b>`, `ID <code>${group.telegramId}</code>`]
-    : [`<b>👤 ${name}</b>`, '<i>ещё не открыл бота — уведомления не приходят</i>'];
+    ? [`<b>👤 ${name}</b>`, `${phone} · ID <code>${group.telegramId}</code>`]
+    : [`<b>👤 ${name}</b>`, phone, '<i>ещё не зарегистрирован — уведомления не приходят</i>'];
 }
 
 // --- level 1: clients ---
 
-function clientsOverview() {
-  const groups = buildClientGroups();
+async function clientsOverview() {
+  const groups = await buildClientGroups();
   if (groups.length === 0) {
     return {
       text: '📋 <b>Заявок пока нет</b>\n\nЗаявки появятся здесь, как только их добавят в Google-таблицу.',
@@ -95,8 +97,8 @@ function clientsOverview() {
 
 // --- level 2: one client's orders ---
 
-function clientOrdersView(orderNumber) {
-  const group = findGroupByOrder(orderNumber);
+async function clientOrdersView(orderNumber) {
+  const group = await findGroupByOrder(orderNumber);
   if (!group) return null;
 
   const lines = [...clientIdentityLines(group), ''];
@@ -113,8 +115,8 @@ function clientOrdersView(orderNumber) {
 
 // --- text export (the full overview in one scrollable dump) ---
 
-function renderTextExport() {
-  const groups = buildClientGroups();
+async function renderTextExport() {
+  const groups = await buildClientGroups();
   if (groups.length === 0) return ['📋 <b>Заявок пока нет</b>'];
 
   const orderLine = (o) => {
@@ -148,22 +150,22 @@ function renderTextExport() {
 }
 
 function registerManagerCommands(bot) {
-  bot.hears(ALL_ORDERS_BUTTON, (ctx) => {
+  bot.hears(ALL_ORDERS_BUTTON, async (ctx) => {
     if (!isManager(ctx.from.id)) return; // silently ignore non-managers
-    const { text, extra } = clientsOverview();
+    const { text, extra } = await clientsOverview();
     return ctx.reply(text, { parse_mode: 'HTML', ...extra });
   });
 
   bot.action('mgr:all', async (ctx) => {
     if (!isManager(ctx.from.id)) return ctx.answerCbQuery();
     await ctx.answerCbQuery();
-    const { text, extra } = clientsOverview();
+    const { text, extra } = await clientsOverview();
     return ctx.editMessageText(text, { parse_mode: 'HTML', ...extra });
   });
 
   bot.action(/^mgr:g:(.+)$/, async (ctx) => {
     if (!isManager(ctx.from.id)) return ctx.answerCbQuery();
-    const view = clientOrdersView(ctx.match[1]);
+    const view = await clientOrdersView(ctx.match[1]);
     if (!view) return ctx.answerCbQuery('Клиент не найден', { show_alert: true });
     await ctx.answerCbQuery();
     return ctx.editMessageText(view.text, { parse_mode: 'HTML', ...view.extra });
@@ -174,10 +176,10 @@ function registerManagerCommands(bot) {
   bot.action(/^mgr:o:(.+)$/, async (ctx) => {
     if (!isManager(ctx.from.id)) return ctx.answerCbQuery();
     const orderNumber = ctx.match[1];
-    const order = queries.findOrder(orderNumber);
+    const order = await queries.findOrder(orderNumber);
     if (!order) return ctx.answerCbQuery('Заявка не найдена', { show_alert: true });
     await ctx.answerCbQuery();
-    return ctx.editMessageText(renderOrderCard(order, queries.getOrderHistory(orderNumber)), {
+    return ctx.editMessageText(renderOrderCard(order, await queries.getOrderHistory(orderNumber)), {
       parse_mode: 'HTML',
       ...managerBackToClient(orderNumber),
     });
@@ -187,19 +189,19 @@ function registerManagerCommands(bot) {
   bot.command('all_orders', async (ctx) => {
     if (!isManager(ctx.from.id)) return;
     await ctx.sendChatAction('typing').catch(() => {});
-    for (const message of renderTextExport()) {
+    for (const message of await renderTextExport()) {
       await ctx.reply(message, { parse_mode: 'HTML' });
     }
   });
 
-  bot.command('status', (ctx) => {
+  bot.command('status', async (ctx) => {
     if (!isManager(ctx.from.id)) return; // silently ignore non-managers
 
     const orderNumber = ctx.message.text.split(/\s+/)[1];
     if (!orderNumber) {
       return ctx.reply('Укажите номер заявки: <code>/status CRG-0001</code>', { parse_mode: 'HTML' });
     }
-    const order = queries.findOrder(orderNumber);
+    const order = await queries.findOrder(orderNumber);
     if (!order) {
       return ctx.reply(`Заявка ${orderNumber} не найдена. Проверьте номер в таблице.`);
     }
@@ -227,18 +229,18 @@ function registerManagerCommands(bot) {
 }
 
 async function applyManualStatus(ctx, orderNumber, statusText) {
-  queries.withTransaction(() => {
-    queries.updateOrderStatus({ orderNumber, statusText, comment: null });
-    queries.appendStatusHistory({ orderNumber, statusText, comment: null, source: 'manual_manager_command' });
-    queries.recordManagerAction({
+  await queries.withTransaction(async (client) => {
+    await queries.updateOrderStatus({ orderNumber, statusText, comment: null }, client);
+    await queries.appendStatusHistory({ orderNumber, statusText, comment: null, source: 'manual_manager_command' }, client);
+    await queries.recordManagerAction({
       managerTelegramId: ctx.from.id,
       orderNumber,
       statusText,
       comment: null,
-    });
+    }, client);
   });
 
-  const order = queries.findOrder(orderNumber);
+  const order = await queries.findOrder(orderNumber);
   let notified = false;
   if (order.telegram_id) {
     try {

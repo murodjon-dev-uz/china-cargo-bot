@@ -16,8 +16,9 @@ function registerContactManager(bot) {
   bot.hears(CONTACT_MANAGER_BUTTON, async (ctx) => {
     await ctx.reply(CLIENT_CONFIRMATION, { parse_mode: 'HTML' });
 
-    const who = ctx.from.username ? `@${escapeHtml(ctx.from.username)}` : escapeHtml(ctx.from.first_name || 'Клиент');
-    const orders = queries.listOrdersForClient(ctx.from.id);
+    const client = await queries.getClient(ctx.from.id);
+    const who = escapeHtml(client?.full_name || ctx.from.first_name || 'Клиент');
+    const orders = await queries.listOrdersForClient(ctx.from.id);
     const active = orders.filter((o) => o.stage !== 'DELIVERED');
 
     const lines = [
