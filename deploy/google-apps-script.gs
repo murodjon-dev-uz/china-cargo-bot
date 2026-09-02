@@ -15,12 +15,33 @@
 // 6. Run onOpen(), then use the China Cargo menu to enable auto-sync
 
 // ============ CONFIGURATION ============
-const WEBHOOK_BASE_URL = PropertiesService.getScriptProperties().getProperty('WEBHOOK_BASE_URL');
-// Paste the value of WEBHOOK_SECRET from the bot's .env here, in the Apps
-// Script editor only — it is deliberately not stored in the repository.
-// Without a matching secret the bot rejects every request with 401
-// (see webhook.js's requireWebhookSecret).
-const WEBHOOK_SECRET = PropertiesService.getScriptProperties().getProperty('WEBHOOK_SECRET');
+//
+// Settings resolve from script properties first, then from the hidden
+// "Настройки" sheet. The sheet exists because script properties can only be
+// typed into the editor by hand — there is no API for them — so a redeploy
+// would always stall on a manual step. Both are visible to anyone who can
+// edit the spreadsheet, so this is not a change in who can read the secret.
+//
+// Read lazily, not at load: a global PropertiesService/Sheets call runs on
+// every trigger, including edits that never send a webhook.
+const SETTINGS_SHEET_NAME = 'Настройки';
+const settingsCache = {};
+
+function getSetting(name) {
+  if (settingsCache[name] !== undefined) return settingsCache[name];
+  var value = PropertiesService.getScriptProperties().getProperty(name);
+  if (!value) {
+    var sheet = SpreadsheetApp.getActive().getSheetByName(SETTINGS_SHEET_NAME);
+    if (sheet && sheet.getLastRow() > 1) {
+      var rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getDisplayValues();
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i][0] && rows[i][0].toString().trim() === name) { value = rows[i][1].toString().trim(); break; }
+      }
+    }
+  }
+  settingsCache[name] = value || '';
+  return settingsCache[name];
+}
 
 const TRACKING_SHEET_NAME = 'Трекинг';
 const ORDERS_SHEET_NAME = 'Заявки';
@@ -525,18 +546,20 @@ function getCellRaw(headers, rowData, headerName) {
 
 function sendWebhook(path, data) {
   try {
-    if (!WEBHOOK_BASE_URL || !WEBHOOK_SECRET) {
-      throw new Error('Set WEBHOOK_BASE_URL and WEBHOOK_SECRET in Apps Script project properties');
+    var baseUrl = getSetting('WEBHOOK_BASE_URL');
+    var secret = getSetting('WEBHOOK_SECRET');
+    if (!baseUrl || !secret) {
+      throw new Error('Задайте WEBHOOK_BASE_URL и WEBHOOK_SECRET в свойствах скрипта или на листе "Настройки"');
     }
     const payload = JSON.stringify(data);
     const options = {
       method: 'post',
       contentType: 'application/json',
-      headers: { 'X-Webhook-Secret': WEBHOOK_SECRET },
+      headers: { 'X-Webhook-Secret': secret },
       payload: payload,
       muteHttpExceptions: true
     };
-    const response = UrlFetchApp.fetch(WEBHOOK_BASE_URL + path, options);
+    const response = UrlFetchApp.fetch(baseUrl + path, options);
     if (response.getResponseCode() === 200) {
       Logger.log(`✅ ${path}: ${(data.rows || []).length} row(s) synced`);
     } else {
