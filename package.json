@@ -10,9 +10,14 @@
     "sync": "node scripts/sync-from-sheets.js",
     "migrate": "node db/migrate.js",
     "check": "node scripts/check.js",
-    "test": "node --test"
+    "test": "node --test",
+    "gas:diff": "node scripts/apps-script.js diff",
+    "gas:pull": "node scripts/apps-script.js pull",
+    "gas:push": "node scripts/apps-script.js push"
   },
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "dotenv": "^16.4.5",
