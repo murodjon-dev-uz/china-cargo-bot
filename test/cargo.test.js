@@ -11,8 +11,6 @@ const plain = (text) => text.split(NBSP).join(' ');
 const formatNumberRu = (...args) => plain(format.formatNumberRu(...args));
 const formatMoney = (...args) => plain(format.formatMoney(...args));
 
-// expectations stay readable.
-
 test('reads numbers as managers actually type them', () => {
   assert.equal(parseDecimal('1 250,5'), 1250.5);
   assert.equal(parseDecimal('1,250.50'), 1250.5);

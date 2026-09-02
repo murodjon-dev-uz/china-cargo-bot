@@ -34,6 +34,8 @@ const CONTACT_PHONE_HEADER = 'Номер телефона';
 const CONTACT_HEADERS = [CONTACT_NAME_HEADER, CONTACT_PHONE_HEADER, 'Статус', 'Дата входа'];
 const CARGO_ID_COL = 1; // Column A on both sheets
 const CARGO_ID_HEADER = 'Cargo ID';
+const CLIENT_COL_NAME = 'Client';
+const PHONE_COL_NAME = 'Телефон';
 const STATUS_PREFIX = 'Status';
 const DATE_PREFIX = 'Date';
 
@@ -86,6 +88,7 @@ function onOpen() {
     .addItem('Setup "Этап" column', 'setupStageColumn')
     .addItem('Setup "Контакты" sheet', 'setupContactsSheet')
     .addItem('Setup "Менеджеры" sheet', 'setupManagersSheet')
+    .addItem('Setup client selectors', 'setupOrderContactSelectors')
     .addItem('Sync contacts now', 'syncContacts')
     .addItem('Setup status dropdown', 'setupStatusDropdown')
     .addItem('Setup "Оплаты" sheet', 'setupPaymentsSheet')
@@ -130,6 +133,79 @@ function setupContactsSheet() {
 
 function setupManagersSheet() {
   setupAccessSheet(MANAGERS_SHEET_NAME);
+}
+
+/**
+ * Adds contact-backed dropdowns to both editable identity columns in
+ * "Заявки". The onEdit handler below fills the other half of the pair.
+ */
+function setupOrderContactSelectors() {
+  const spreadsheet = SpreadsheetApp.getActive();
+  const orders = spreadsheet.getSheetByName(ORDERS_SHEET_NAME);
+  const contacts = spreadsheet.getSheetByName(CONTACTS_SHEET_NAME);
+  if (!orders || !contacts) {
+    SpreadsheetApp.getUi().alert('Нужны листы "Заявки" и "Контакты"');
+    return;
+  }
+
+  const headers = orders.getRange(1, 1, 1, orders.getLastColumn()).getValues()[0];
+  const clientCol = findColumnByHeader(headers, CLIENT_COL_NAME);
+  const phoneCol = findColumnByHeader(headers, PHONE_COL_NAME);
+  if (clientCol < 1 || phoneCol < 1) {
+    SpreadsheetApp.getUi().alert('В "Заявки" не найдены колонки Client и Телефон');
+    return;
+  }
+
+  const rows = Math.max(orders.getMaxRows() - 1, 1);
+  const contactRows = Math.max(contacts.getMaxRows() - 1, 1);
+  const clientRule = SpreadsheetApp.newDataValidation()
+    .requireValueInRange(contacts.getRange(2, 1, contactRows, 1), true)
+    .setAllowInvalid(false)
+    .build();
+  const phoneRule = SpreadsheetApp.newDataValidation()
+    .requireValueInRange(contacts.getRange(2, 2, contactRows, 1), true)
+    .setAllowInvalid(false)
+    .build();
+
+  orders.getRange(2, clientCol, rows, 1).setDataValidation(clientRule);
+  orders.getRange(2, phoneCol, rows, 1).setNumberFormat('@').setDataValidation(phoneRule);
+  SpreadsheetApp.getUi().alert('Списки Client и Телефон настроены. ✅');
+}
+
+function fillOrderContactPairs(sheet, headers, firstRow, lastRow, editedFirstCol, editedLastCol) {
+  const clientCol = findColumnByHeader(headers, CLIENT_COL_NAME);
+  const phoneCol = findColumnByHeader(headers, PHONE_COL_NAME);
+  if (clientCol < 1 || phoneCol < 1) return;
+  const clientEdited = editedFirstCol <= clientCol && editedLastCol >= clientCol;
+  const phoneEdited = editedFirstCol <= phoneCol && editedLastCol >= phoneCol;
+  if (!clientEdited && !phoneEdited) return;
+
+  const contacts = SpreadsheetApp.getActive().getSheetByName(CONTACTS_SHEET_NAME);
+  if (!contacts || contacts.getLastRow() < 2) return;
+  const contactValues = contacts.getRange(2, 1, contacts.getLastRow() - 1, 2).getDisplayValues();
+  const phoneByClient = {};
+  const clientByPhone = {};
+  contactValues.forEach(function (row) {
+    const client = row[0] ? row[0].toString().trim() : '';
+    const phone = row[1] ? row[1].toString().trim() : '';
+    if (client && phone && !phoneByClient[client]) phoneByClient[client] = phone;
+    if (phone && client) clientByPhone[phone] = client;
+  });
+
+  for (let row = firstRow; row <= lastRow; row++) {
+    const clientCell = sheet.getRange(row, clientCol);
+    const phoneCell = sheet.getRange(row, phoneCol);
+    const client = clientCell.getDisplayValue().trim();
+    const phone = phoneCell.getDisplayValue().trim();
+
+    // A single-column edit has an unambiguous source. For a paste spanning
+    // both columns, prefer the phone because it is unique in the access list.
+    if (phoneEdited && phone && clientByPhone[phone]) {
+      clientCell.setValue(clientByPhone[phone]);
+    } else if (clientEdited && client && phoneByClient[client]) {
+      phoneCell.setNumberFormat('@').setValue(phoneByClient[client]);
+    }
+  }
 }
 
 function setupAccessSheet(name) {
@@ -369,6 +445,12 @@ function onEdit(e) {
   // the header row if it was part of the range.
   const firstDataRow = Math.max(startRow, 2);
   const lastDataRow = startRow + numRows - 1;
+
+  if (sheetName === ORDERS_SHEET_NAME) {
+    const firstCol = e.range.getColumn();
+    const lastCol = firstCol + e.range.getNumColumns() - 1;
+    fillOrderContactPairs(sheet, headers, firstDataRow, lastDataRow, firstCol, lastCol);
+  }
 
   if (sheetName === TRACKING_SHEET_NAME) {
     // Grow the dropdown from whatever was just typed, before syncing.
