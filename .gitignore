@@ -4,3 +4,8 @@ service-account.json
 data/
 logs/
 backups/
+
+# clasp working copy of the Apps Script project — deploy/google-apps-script.gs
+# stays the canonical source; this is only what clasp pull/push shuffles.
+gas/
+.clasp.json
